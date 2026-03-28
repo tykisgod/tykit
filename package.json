@@ -1,0 +1,22 @@
+{
+  "name": "com.tyk.tykit",
+  "version": "0.1.0",
+  "displayName": "Tykit",
+  "description": "Lightweight HTTP server for external Unity Editor control. Zero external processes, hot-pluggable via UPM. Designed for CLI/AI workflows.",
+  "unity": "2021.3",
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
+  "keywords": ["editor", "automation", "testing", "ai", "cli"],
+  "author": {
+    "name": "Yukang Tian",
+    "url": "https://github.com/tykisgod"
+  },
+  "samples": [
+    {
+      "displayName": "Mario Demo",
+      "description": "2D platformer demo with SMB1-accurate jump physics",
+      "path": "Samples~/MarioDemo"
+    }
+  ]
+}
