@@ -11,12 +11,5 @@
   "author": {
     "name": "Yukang Tian",
     "url": "https://github.com/tykisgod"
-  },
-  "samples": [
-    {
-      "displayName": "Mario Demo",
-      "description": "2D platformer demo with SMB1-accurate jump physics",
-      "path": "Samples~/MarioDemo"
-    }
-  ]
+  }
 }

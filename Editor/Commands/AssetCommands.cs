@@ -29,6 +29,8 @@ namespace Tykit
             var path = args["path"]?.Value<string>();
             if (string.IsNullOrEmpty(path))
                 return CommandRegistry.Error("Missing 'path'");
+            if (!IsValidAssetPath(path))
+                return CommandRegistry.Error("Path must start with 'Assets/' and not contain '..'");
 
             EnsureDirectoryExists(path);
             var prefab = PrefabUtility.SaveAsPrefabAsset(go, path);
@@ -43,6 +45,8 @@ namespace Tykit
             var path = args["path"]?.Value<string>();
             if (string.IsNullOrEmpty(path))
                 return CommandRegistry.Error("Missing 'path'");
+            if (!IsValidAssetPath(path))
+                return CommandRegistry.Error("Path must start with 'Assets/' and not contain '..'");
 
             var shaderName = args["shader"]?.Value<string>() ?? "Universal Render Pipeline/Lit";
             var shader = Shader.Find(shaderName);
@@ -104,8 +108,16 @@ namespace Tykit
             return CommandRegistry.Ok("AssetDatabase refreshed");
         }
 
+        private static bool IsValidAssetPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            var normalized = path.Replace('\\', '/');
+            return normalized.StartsWith("Assets/") && !normalized.Contains("..");
+        }
+
         private static void EnsureDirectoryExists(string assetPath)
         {
+            if (!IsValidAssetPath(assetPath)) return;
             var dir = System.IO.Path.GetDirectoryName(assetPath);
             if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
                 System.IO.Directory.CreateDirectory(dir);
