@@ -1,5 +1,5 @@
 #!/bin/bash
-# Unity Eval Server CLI
+# tykit CLI
 # Usage:
 #   ./scripts/unity-eval.sh <command> [args-json]
 #   ./scripts/unity-eval.sh hierarchy
@@ -66,7 +66,7 @@ send() {
         -d "$body" 2>/dev/null)
 
     if [ $? -ne 0 ]; then
-        echo -e "${RED}Error: Cannot connect to EvalServer on port $port${NC}" >&2
+        echo -e "${RED}Error: Cannot connect to tykit on port $port${NC}" >&2
         exit 1
     fi
 
@@ -87,7 +87,7 @@ case "${1:-}" in
 
         # ping check
         if ! curl -s --noproxy localhost --max-time 3 "http://localhost:${port}/ping" &>/dev/null; then
-            echo -e "${RED}EvalServer unreachable${NC}" >&2
+            echo -e "${RED}tykit unreachable${NC}" >&2
             exit 2
         fi
 
@@ -159,19 +159,19 @@ except:
         ;;
     --wait-ready|-w)
         max_wait="${2:-60}"
-        echo -e "${GREEN}Waiting for EvalServer (max ${max_wait}s)...${NC}" >&2
+        echo -e "${GREEN}Waiting for tykit (max ${max_wait}s)...${NC}" >&2
         for i in $(seq 1 "$max_wait"); do
             if [ -f "$SERVER_INFO" ]; then
                 port=$(get_port)
                 if curl -s --noproxy localhost --max-time 2 "http://localhost:${port}/ping" &>/dev/null; then
-                    echo -e "${GREEN}EvalServer ready (${i}s)${NC}" >&2
+                    echo -e "${GREEN}tykit ready (${i}s)${NC}" >&2
                     curl -s --noproxy localhost --max-time 2 "http://localhost:${port}/ping" | json_fmt
                     exit 0
                 fi
             fi
             sleep 1
         done
-        echo -e "${RED}Timeout: EvalServer not ready after ${max_wait}s${NC}" >&2
+        echo -e "${RED}Timeout: tykit not ready after ${max_wait}s${NC}" >&2
         exit 1
         ;;
     --help|-h)

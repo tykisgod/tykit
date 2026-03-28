@@ -119,7 +119,7 @@ namespace Tykit
         private static JObject RunTests(JObject args)
         {
             // Auto-save dirty scenes to prevent the modal "Save Scene" dialog
-            // which blocks the main thread and freezes EvalServer
+            // which blocks the main thread and freezes tykit
             if (EditorSceneManager.GetActiveScene().isDirty)
                 EditorSceneManager.SaveOpenScenes();
 

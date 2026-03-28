@@ -18,7 +18,7 @@ namespace Tykit
 
         public static bool IsSimulating => _active;
 
-        // --- Control API (called by EvalServer commands) ---
+        // --- Control API (called by tykit commands) ---
 
         public static void SetAxis(string axis, float value)
         {

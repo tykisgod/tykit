@@ -236,7 +236,7 @@ namespace Tykit
 
         private static JObject ClearConsole()
         {
-            // Clear EvalServer internal buffer
+            // Clear tykit internal buffer
             while (_consoleLogs.TryDequeue(out _)) { }
             _logCount = 0;
 

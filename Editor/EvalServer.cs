@@ -65,7 +65,7 @@ namespace Tykit
 
                     WriteServerInfo();
                     string hint = port == preferredPort ? "preferred" : $"fallback, preferred was {preferredPort}";
-                    Debug.Log($"[EvalServer] Listening on http://localhost:{port}/ ({hint})");
+                    Debug.Log($"[tykit] Listening on http://localhost:{port}/ ({hint})");
                     return;
                 }
                 catch (Exception)
@@ -73,7 +73,7 @@ namespace Tykit
                     _listener?.Close();
                 }
             }
-            Debug.LogError($"[EvalServer] Failed to start: all ports {PortRangeBase}-{maxPort} in use");
+            Debug.LogError($"[tykit] Failed to start: all ports {PortRangeBase}-{maxPort} in use");
         }
 
         /// <summary>
@@ -165,7 +165,7 @@ namespace Tykit
                 catch (ObjectDisposedException) { break; }
                 catch (Exception e)
                 {
-                    Debug.LogWarning($"[EvalServer] Listener error: {e.Message}");
+                    Debug.LogWarning($"[tykit] Listener error: {e.Message}");
                 }
             }
         }
@@ -209,7 +209,7 @@ namespace Tykit
             }
             catch (Exception e)
             {
-                Debug.LogWarning($"[EvalServer] Response error: {e.Message}");
+                Debug.LogWarning($"[tykit] Response error: {e.Message}");
             }
         }
 

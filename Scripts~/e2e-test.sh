@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tykit E2E Test — runs against a live Unity Editor with EvalServer
+# Tykit E2E Test — runs against a live Unity Editor with tykit
 # Usage: ./Scripts~/e2e-test.sh [path-to-unity-eval.sh]
 #
 # Requires Unity Editor running with tykit loaded.
@@ -66,8 +66,8 @@ print(d)
 }
 
 # --- ping ---
-echo -e "${YELLOW}Checking EvalServer...${NC}"
-PING=$("$EVAL" --ping 2>&1) || { echo -e "${RED}EvalServer not reachable. Is Unity open?${NC}"; exit 1; }
+echo -e "${YELLOW}Checking tykit...${NC}"
+PING=$("$EVAL" --ping 2>&1) || { echo -e "${RED}tykit not reachable. Is Unity open?${NC}"; exit 1; }
 echo -e "  ${GREEN}✓${NC} ping ok"
 
 # --- commands ---
