@@ -1,6 +1,6 @@
 {
   "name": "com.tyk.tykit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Tykit",
   "description": "Lightweight HTTP server for external Unity Editor control. Zero external processes, hot-pluggable via UPM. Designed for CLI/AI workflows.",
   "unity": "2021.3",
