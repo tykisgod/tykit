@@ -1,4 +1,4 @@
-// Assets/Editor/EvalServer/Commands/HierarchyCommands.cs
+// Commands/HierarchyCommands.cs
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;

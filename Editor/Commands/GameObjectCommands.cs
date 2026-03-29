@@ -1,4 +1,4 @@
-// Assets/Editor/EvalServer/Commands/GameObjectCommands.cs
+// Commands/GameObjectCommands.cs
 using System;
 using Newtonsoft.Json.Linq;
 using UnityEngine;

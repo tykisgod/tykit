@@ -1,4 +1,4 @@
-// Assets/Editor/EvalServer/EvalServer.cs
+// TykitServer.cs
 using System;
 using System.Collections.Concurrent;
 using System.IO;
@@ -12,7 +12,7 @@ using UnityEngine;
 namespace Tykit
 {
     [InitializeOnLoad]
-    public static class EvalServer
+    public static class TykitServer
     {
         private const int PortRangeBase = 8090;
         private const int PortRangeSize = 64; // 8090-8153
@@ -23,9 +23,9 @@ namespace Tykit
         private static readonly ConcurrentQueue<RequestContext> _requestQueue = new();
 
         private static readonly string ServerInfoFile = Path.Combine(
-            Application.dataPath, "..", "Temp", "eval_server.json");
+            Application.dataPath, "..", "Temp", "tykit.json");
 
-        static EvalServer()
+        static TykitServer()
         {
             Start();
             EditorApplication.update += ProcessQueue;

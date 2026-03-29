@@ -12,14 +12,14 @@ set -euo pipefail
 # Project directory: prefer UNITY_PROJECT_DIR env var, then current working directory, then script location parent
 if [ -n "${UNITY_PROJECT_DIR:-}" ]; then
     PROJECT_DIR="$UNITY_PROJECT_DIR"
-elif [ -f "Temp/eval_server.json" ]; then
+elif [ -f "Temp/tykit.json" ]; then
     PROJECT_DIR="$(pwd)"
-elif [ -f "$(cd "$(dirname "$0")/.." && pwd)/Temp/eval_server.json" ]; then
+elif [ -f "$(cd "$(dirname "$0")/.." && pwd)/Temp/tykit.json" ]; then
     PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 else
     PROJECT_DIR="$(pwd)"
 fi
-SERVER_INFO="$PROJECT_DIR/Temp/eval_server.json"
+SERVER_INFO="$PROJECT_DIR/Temp/tykit.json"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -39,7 +39,7 @@ json_fmt() {
 # Discover server port
 get_port() {
     if [ ! -f "$SERVER_INFO" ]; then
-        echo -e "${RED}Error: eval_server.json not found. Is Unity Editor running?${NC}" >&2
+        echo -e "${RED}Error: tykit.json not found. Is Unity Editor running?${NC}" >&2
         exit 1
     fi
     grep '"port"' "$SERVER_INFO" | sed 's/[^0-9]//g'

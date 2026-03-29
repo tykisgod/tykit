@@ -1,4 +1,4 @@
-// Assets/Editor/EvalServer/Commands/ComponentCommands.cs
+// Commands/ComponentCommands.cs
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;

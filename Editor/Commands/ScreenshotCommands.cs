@@ -1,4 +1,4 @@
-// Assets/Editor/EvalServer/Commands/ScreenshotCommands.cs
+// Commands/ScreenshotCommands.cs
 using System;
 using System.IO;
 using Newtonsoft.Json.Linq;
