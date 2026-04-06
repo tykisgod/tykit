@@ -149,10 +149,17 @@ namespace Tykit
             CommandRegistry.Register(
                 CommandRegistry.Describe(
                     "dismiss-dialog",
-                    "Attempt to dismiss a modal dialog blocking Unity's main thread (Windows only). Best-effort; returns what it tried.",
+                    "Attempt to dismiss a modal dialog (Windows only). NOTE: this command runs on the main thread. If main thread is ALREADY blocked, call GET /dismiss-dialog directly on the HTTP server instead — that path runs on the listener thread and bypasses the queue.",
                     "editor.control",
                     true),
                 _ => DismissDialog());
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "focus-unity",
+                    "Bring Unity's main window to the foreground (Windows only). NOTE: if the main thread is blocked, call GET /focus-unity instead — that path runs on the listener thread.",
+                    "editor.control",
+                    true),
+                _ => FocusUnity());
             CommandRegistry.Register(
                 CommandRegistry.Describe(
                     "batch",
@@ -556,6 +563,29 @@ namespace Tykit
             }
 #else
             return CommandRegistry.Error("dismiss-dialog is Windows-only");
+#endif
+        }
+
+        // focus-unity (main-thread command variant; when main thread is blocked, use GET /focus-unity)
+        private static JObject FocusUnity()
+        {
+#if UNITY_EDITOR_WIN
+            try
+            {
+                // Delegates to the listener-thread helper via reflection-free redirect:
+                // call it synchronously (we're on main thread here but the Windows API works either way).
+                var method = typeof(TykitServer).GetMethod("FocusUnityWindow",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                if (method == null) return CommandRegistry.Error("Internal: FocusUnityWindow not found");
+                var result = method.Invoke(null, null) as JObject;
+                return result ?? CommandRegistry.Error("focus-unity returned null");
+            }
+            catch (Exception e)
+            {
+                return CommandRegistry.Error($"focus-unity failed: {e.Message}");
+            }
+#else
+            return CommandRegistry.Error("focus-unity is Windows-only");
 #endif
         }
 

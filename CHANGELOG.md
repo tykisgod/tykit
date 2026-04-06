@@ -5,10 +5,19 @@ All notable changes to tykit are documented here.
 ## [0.5.0] - 2026-04-06
 
 ### Added — resilience against blocked main thread
-- `/health` HTTP endpoint (listener-thread, bypasses main thread) — returns queue depth, time since last main-thread tick, and `mainThreadBlocked` heuristic. Use this when POST commands time out to tell modal-dialog blocks from network issues.
+- **`GET /health`** HTTP endpoint (listener-thread, bypasses main thread) — returns queue depth, time since last main-thread tick, and `mainThreadBlocked` heuristic. Use this when POST commands time out to tell modal-dialog blocks from network issues.
+- **`GET /focus-unity`** HTTP endpoint (listener-thread, Windows only) — brings Unity's main window to the foreground via `SetForegroundWindow`. Unsticks background-throttled operations like domain reload and `git` package resolve that Unity pauses when not focused. **Runs on the listener thread**, so it works even when main thread is blocked.
+- **`GET /dismiss-dialog`** HTTP endpoint (listener-thread, Windows only) — posts `WM_CLOSE` to the foreground dialog owned by Unity. **Runs on the listener thread**, so it can recover from modals that block the main thread.
 - Main thread heartbeat — `ProcessQueue` updates a timestamp every tick so the listener thread can detect main-thread stalls.
-- `dismiss-dialog` command (Windows only) — best-effort posts `WM_CLOSE` to the foreground dialog owned by Unity. Not portable, but effective against "Save modified scenes?" and similar modals.
+- `focus-unity` / `dismiss-dialog` commands (main-thread variants, POST body) — convenience wrappers for when the main thread is responsive. When main thread is blocked, use the GET endpoints instead.
 - Auto-save dirty scenes before `play` and `open-scene` — prevents the "Save modified scenes?" dialog that previously blocked tykit main-thread indefinitely.
+
+### Recovery workflow
+When a POST command times out:
+1. `curl /ping` → still OK? listener thread alive
+2. `curl /health` → check `mainThreadBlocked`; if true, main thread is stalled
+3. `curl /focus-unity` → for background-throttled operations (domain reload waiting for focus)
+4. `curl /dismiss-dialog` → for modal dialogs (Save Scene? / compile error popup / etc.)
 
 ### Added — batch + scene + prefs (套餐 C/D)
 - `batch` command — execute multiple commands in one request. Reduces round-trip latency for complex workflows (30+ calls → 1 call). Supports `stopOnError`.

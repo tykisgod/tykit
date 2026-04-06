@@ -1,8 +1,10 @@
 // TykitServer.cs
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json.Linq;
@@ -159,6 +161,25 @@ namespace Tykit
                         continue;
                     }
 
+                    // /focus-unity — listener-thread recovery: bring Unity's main window to foreground.
+                    // Use when Unity has background-throttled domain reload or asset import.
+                    // Windows only. Must run on listener thread because main thread may be stalled.
+                    if (ctx.Request.Url.AbsolutePath == "/focus-unity")
+                    {
+                        var focusResult = FocusUnityWindow();
+                        Respond(ctx, 200, focusResult.ToString());
+                        continue;
+                    }
+
+                    // /dismiss-dialog — listener-thread recovery: WM_CLOSE to foreground dialog.
+                    // Windows only. Must run on listener thread because main thread may be blocked by the dialog itself.
+                    if (ctx.Request.Url.AbsolutePath == "/dismiss-dialog")
+                    {
+                        var dismissResult = DismissForegroundDialog();
+                        Respond(ctx, 200, dismissResult.ToString());
+                        continue;
+                    }
+
                     // /health — listener-thread diagnostic: queue state + main thread heartbeat.
                     // Use this when POST commands time out to detect blocked main thread (modal dialogs).
                     if (ctx.Request.Url.AbsolutePath == "/health")
@@ -273,5 +294,135 @@ namespace Tykit
             public string Body;
             public DateTime EnqueueTime;
         }
+
+        // ═══ Listener-thread recovery actions (Windows only) ═══
+        //
+        // These run in the HTTP listener thread and do NOT touch Unity's main thread,
+        // so they work even when the main thread is blocked by a modal dialog or package resolve.
+
+#if UNITY_EDITOR_WIN
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc enumProc, IntPtr lParam);
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+        [DllImport("user32.dll")]
+        private static extern bool IsWindowVisible(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        private static extern int GetWindowTextLength(IntPtr hWnd);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+        private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+        private const int SW_RESTORE = 9;
+        private const int SW_SHOW = 5;
+        private const uint WM_CLOSE = 0x0010;
+#endif
+
+        private static JObject FocusUnityWindow()
+        {
+#if UNITY_EDITOR_WIN
+            try
+            {
+                int unityPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                var candidates = new List<(IntPtr hwnd, string title)>();
+
+                EnumWindows((hwnd, lParam) =>
+                {
+                    if (!IsWindowVisible(hwnd)) return true;
+                    GetWindowThreadProcessId(hwnd, out uint pid);
+                    if (pid != unityPid) return true;
+
+                    int len = GetWindowTextLength(hwnd);
+                    if (len == 0) return true;
+                    var sb = new StringBuilder(len + 1);
+                    GetWindowText(hwnd, sb, sb.Capacity);
+                    candidates.Add((hwnd, sb.ToString()));
+                    return true;
+                }, IntPtr.Zero);
+
+                if (candidates.Count == 0)
+                    return Err("No visible Unity windows found");
+
+                // Prefer the main editor window (title usually contains "Unity" and project name)
+                IntPtr target = IntPtr.Zero;
+                string targetTitle = null;
+                foreach (var c in candidates)
+                {
+                    if (c.title.Contains("Unity") && c.title.Contains("-"))
+                    {
+                        target = c.hwnd;
+                        targetTitle = c.title;
+                        break;
+                    }
+                }
+                if (target == IntPtr.Zero)
+                {
+                    target = candidates[0].hwnd;
+                    targetTitle = candidates[0].title;
+                }
+
+                ShowWindow(target, SW_RESTORE);
+                SetForegroundWindow(target);
+
+                return Ok(new JObject
+                {
+                    ["focused"] = targetTitle,
+                    ["candidateCount"] = candidates.Count
+                });
+            }
+            catch (Exception e)
+            {
+                return Err($"focus-unity failed: {e.Message}");
+            }
+#else
+            return Err("focus-unity is Windows-only");
+#endif
+        }
+
+        private static JObject DismissForegroundDialog()
+        {
+#if UNITY_EDITOR_WIN
+            try
+            {
+                IntPtr hwnd = GetForegroundWindow();
+                if (hwnd == IntPtr.Zero) return Err("No foreground window");
+
+                GetWindowThreadProcessId(hwnd, out uint pid);
+                int unityPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                if (pid != unityPid)
+                    return Err($"Foreground window owned by pid {pid}, not Unity ({unityPid})");
+
+                var sb = new StringBuilder(256);
+                GetWindowText(hwnd, sb, sb.Capacity);
+
+                PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                return Ok(new JObject
+                {
+                    ["dismissed"] = sb.ToString(),
+                    ["hwnd"] = hwnd.ToInt64().ToString("X")
+                });
+            }
+            catch (Exception e)
+            {
+                return Err($"dismiss-dialog failed: {e.Message}");
+            }
+#else
+            return Err("dismiss-dialog is Windows-only");
+#endif
+        }
+
+        private static JObject Ok(object data) =>
+            new JObject { ["success"] = true, ["data"] = data is JToken t ? t : JToken.FromObject(data), ["error"] = null };
+        private static JObject Err(string msg) =>
+            new JObject { ["success"] = false, ["data"] = null, ["error"] = msg };
     }
 }
