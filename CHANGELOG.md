@@ -2,6 +2,20 @@
 
 All notable changes to tykit are documented here.
 
+## [0.4.0] - 2026-04-06
+
+### Added
+- `call-method` command — invoke any public or non-public method on a component via reflection. Parameters passed as JSON array, return value serialized to JSON. Finally makes runtime testing viable without code scaffolding.
+- `get-field` / `set-field` commands — read/write code-level fields or properties via reflection, bypassing SerializedProperty. Walks the type hierarchy for inherited private members. Solves the "I need to poke a non-SerializeField field" problem.
+- `get-array` command — read an entire serialized array/list as a structured JSON array, with nested struct/class elements fully expanded. Previously you had to query each index separately.
+- `array-move` command — reorder elements in a serialized array/list via `MoveArrayElement`.
+- `ping` command — highlight a GameObject or asset in the editor without changing selection. Supports `assetPath` for project assets.
+- `find` enhanced — new `parentId`, `path` (exact hierarchy match), and `includeInactive` parameters. Lets you scope searches to a subtree and locate inactive objects.
+- `select` enhanced — new `ids` array parameter for multi-select, plus `ping: false` option to skip the default highlight.
+
+### Changed
+- `find` by `name`/`type` now correctly honors `parentId` scoping and `includeInactive` (previously only worked on the global scene root).
+
 ## [0.3.0] - 2026-04-06
 
 ### Added

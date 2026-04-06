@@ -77,14 +77,28 @@ namespace Tykit
             CommandRegistry.Register(
                 CommandRegistry.Describe(
                     "select",
-                    "Select a GameObject by instanceId, path, or name.",
+                    "Select one or more GameObjects by instanceId, path, or name. Pings by default; pass ping:false to skip highlight.",
                     "selection",
                     true,
                     CommandSchema.Object(
                         ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("ids", CommandSchema.Array(CommandSchema.Integer(), "Array of GameObject instanceIds for multi-select.")),
                         ("path", CommandSchema.String("Hierarchy path, for example World/Ship.")),
-                        ("name", CommandSchema.String("GameObject name.")))),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("ping", CommandSchema.Boolean("Whether to ping (highlight) in editor. Default true.")))),
                 SelectGameObject);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "ping",
+                    "Highlight an object in the editor without changing selection. Works for GameObjects (id/path/name) or assets (assetPath).",
+                    "selection",
+                    false,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject or asset instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("assetPath", CommandSchema.String("Asset path, e.g. Assets/Prefabs/Ship.prefab.")))),
+                PingObject);
             CommandRegistry.Register(
                 CommandRegistry.Describe("get-selection", "Read the current editor selection.", "selection", false),
                 _ => GetSelection());
@@ -205,16 +219,65 @@ namespace Tykit
         // args: {"id":12345} or {"name":"Ship"}
         private static JObject SelectGameObject(JObject args)
         {
+            bool doPing = args["ping"]?.Value<bool>() ?? true;
+
+            // Multi-select via ids array
+            var idsArr = args["ids"] as JArray;
+            if (idsArr != null && idsArr.Count > 0)
+            {
+                var selected = new System.Collections.Generic.List<GameObject>();
+                foreach (var token in idsArr)
+                {
+                    var obj = EditorUtility.InstanceIDToObject(token.Value<int>()) as GameObject;
+                    if (obj != null) selected.Add(obj);
+                }
+                if (selected.Count == 0)
+                    return CommandRegistry.Error("No valid GameObjects found for given ids");
+
+                Selection.objects = selected.ToArray();
+                if (doPing && selected[0] != null)
+                    EditorGUIUtility.PingObject(selected[0]);
+
+                var names = new JArray();
+                foreach (var g in selected) names.Add(g.name);
+                return CommandRegistry.Ok(new JObject
+                {
+                    ["count"] = selected.Count,
+                    ["names"] = names
+                });
+            }
+
             var (go, err) = CommandRegistry.ResolveGameObject(args);
             if (go == null) return CommandRegistry.Error(err);
 
             Selection.activeGameObject = go;
-            EditorGUIUtility.PingObject(go);
+            if (doPing) EditorGUIUtility.PingObject(go);
             return CommandRegistry.Ok(new JObject
             {
                 ["name"] = go.name,
                 ["instanceId"] = go.GetInstanceID()
             });
+        }
+
+        // args: {"id":12345} or {"path":"World/Ship"} or {"assetPath":"Assets/Prefabs/Ship.prefab"}
+        private static JObject PingObject(JObject args)
+        {
+            // Asset path first
+            var assetPath = args["assetPath"]?.Value<string>();
+            if (!string.IsNullOrEmpty(assetPath))
+            {
+                var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath);
+                if (asset == null) return CommandRegistry.Error($"Asset not found: {assetPath}");
+                EditorGUIUtility.PingObject(asset);
+                return CommandRegistry.Ok($"Pinged asset: {assetPath}");
+            }
+
+            // GameObject by id/path/name
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return CommandRegistry.Error(err);
+
+            EditorGUIUtility.PingObject(go);
+            return CommandRegistry.Ok($"Pinged: {go.name}");
         }
 
         // args: {"path":"Assets/Scenes/MyScene.unity","mode":"single"}

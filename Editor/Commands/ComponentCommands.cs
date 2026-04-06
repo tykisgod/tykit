@@ -124,6 +124,78 @@ namespace Tykit
                         ("text", CommandSchema.String("Text content to assign.")),
                         ("inChildren", CommandSchema.Boolean("If true, search children for the first text component. Default false.")))),
                 SetText);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "array-move",
+                    "Move an element inside a serialized array/list from one index to another.",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type name.")),
+                        ("property", CommandSchema.String("Serialized array property path.")),
+                        ("fromIndex", CommandSchema.Integer("Source index.")),
+                        ("toIndex", CommandSchema.Integer("Destination index.")))),
+                ArrayMove);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "get-array",
+                    "Read all elements of a serialized array/list property as a structured JSON array.",
+                    "scene.query",
+                    false,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type name.")),
+                        ("property", CommandSchema.String("Serialized array property path.")))),
+                GetArray);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "call-method",
+                    "Invoke a public (or non-public) method on a component via reflection. Returns the result as JSON.",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type name.")),
+                        ("method", CommandSchema.String("Method name.")),
+                        ("params", CommandSchema.Array(new JObject(), "Optional parameter array.")),
+                        ("nonPublic", CommandSchema.Boolean("Allow invoking non-public methods. Default false.")))),
+                CallMethod);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "get-field",
+                    "Read a field or property value on a component via reflection (bypasses SerializedProperty).",
+                    "scene.query",
+                    false,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type name.")),
+                        ("field", CommandSchema.String("Field or property name.")),
+                        ("nonPublic", CommandSchema.Boolean("Allow accessing non-public members. Default true.")))),
+                GetField);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "set-field",
+                    "Write a field or property value on a component via reflection (bypasses SerializedProperty).",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type name.")),
+                        ("field", CommandSchema.String("Field or property name.")),
+                        ("value", new JObject { ["description"] = "JSON value (int/float/bool/string/array/object)." }),
+                        ("nonPublic", CommandSchema.Boolean("Allow accessing non-public members. Default true.")))),
+                SetField);
         }
 
         // args: {"id":12345,"component":"BoxCollider"} or {"name":"Ship","component":"BoxCollider"}
@@ -363,6 +435,241 @@ namespace Tykit
             }
 
             return CommandRegistry.Error("No text component (TMP_Text/TextMeshProUGUI/Text) found on GameObject");
+        }
+
+        // args: {"id":..,"component":"Foo","property":"items","fromIndex":1,"toIndex":3}
+        private static JObject ArrayMove(JObject args)
+        {
+            var (so, prop, err) = ResolveArrayProperty(args);
+            if (err != null) return err;
+
+            var fromToken = args["fromIndex"];
+            var toToken = args["toIndex"];
+            if (fromToken == null || toToken == null)
+                return CommandRegistry.Error("Required: 'fromIndex', 'toIndex'");
+
+            int from = fromToken.Value<int>();
+            int to = toToken.Value<int>();
+            if (from < 0 || from >= prop.arraySize || to < 0 || to >= prop.arraySize)
+                return CommandRegistry.Error($"index out of range (size={prop.arraySize})");
+
+            prop.MoveArrayElement(from, to);
+            so.ApplyModifiedProperties();
+            return CommandRegistry.Ok(new JObject { ["from"] = from, ["to"] = to, ["size"] = prop.arraySize });
+        }
+
+        // args: {"id":..,"component":"Foo","property":"items"} → {"size":N,"elements":[...]}
+        private static JObject GetArray(JObject args)
+        {
+            var (so, prop, err) = ResolveArrayProperty(args);
+            if (err != null) return err;
+
+            var elements = new JArray();
+            for (int i = 0; i < prop.arraySize; i++)
+            {
+                var element = prop.GetArrayElementAtIndex(i);
+                elements.Add(SerializeElementStructured(element));
+            }
+
+            return CommandRegistry.Ok(new JObject
+            {
+                ["size"] = prop.arraySize,
+                ["elements"] = elements
+            });
+        }
+
+        // Serialize a single SerializedProperty as structured JSON, including nested objects.
+        private static JToken SerializeElementStructured(SerializedProperty prop)
+        {
+            // For primitive-like types, use existing structured serializer
+            var simple = GetPropertyValueStructured(prop);
+            if (prop.propertyType != SerializedPropertyType.Generic)
+                return simple;
+
+            // Generic (struct/class): walk children
+            var obj = new JObject();
+            var end = prop.GetEndProperty();
+            var iter = prop.Copy();
+            if (iter.NextVisible(true))
+            {
+                do
+                {
+                    if (SerializedProperty.EqualContents(iter, end)) break;
+                    obj[iter.name] = iter.propertyType == SerializedPropertyType.Generic
+                        ? SerializeElementStructured(iter)
+                        : GetPropertyValueStructured(iter);
+                } while (iter.NextVisible(false));
+            }
+            return obj;
+        }
+
+        // args: {"id":..,"component":"Foo","method":"Bar","params":[...]}
+        private static JObject CallMethod(JObject args)
+        {
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return CommandRegistry.Error(err);
+
+            var typeName = args["component"]?.Value<string>();
+            var methodName = args["method"]?.Value<string>();
+            if (string.IsNullOrEmpty(typeName) || string.IsNullOrEmpty(methodName))
+                return CommandRegistry.Error("Required: 'component', 'method'");
+
+            var type = TypeHelper.FindType(typeName);
+            if (type == null) return CommandRegistry.Error($"Type not found: {typeName}");
+
+            var comp = go.GetComponent(type);
+            if (comp == null) return CommandRegistry.Error($"Component not found: {typeName}");
+
+            bool nonPublic = args["nonPublic"]?.Value<bool>() ?? false;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
+            if (nonPublic) flags |= System.Reflection.BindingFlags.NonPublic;
+
+            var paramArr = args["params"] as JArray;
+            int paramCount = paramArr?.Count ?? 0;
+
+            // Find matching method by name + parameter count
+            System.Reflection.MethodInfo method = null;
+            foreach (var m in type.GetMethods(flags))
+            {
+                if (m.Name == methodName && m.GetParameters().Length == paramCount)
+                {
+                    method = m;
+                    break;
+                }
+            }
+            if (method == null)
+                return CommandRegistry.Error($"Method not found: {typeName}.{methodName} (params: {paramCount})");
+
+            // Convert JSON params to method parameter types
+            var methodParams = method.GetParameters();
+            var callArgs = new object[paramCount];
+            for (int i = 0; i < paramCount; i++)
+            {
+                try
+                {
+                    callArgs[i] = paramArr[i].ToObject(methodParams[i].ParameterType);
+                }
+                catch (Exception ex)
+                {
+                    return CommandRegistry.Error($"Cannot convert param {i} to {methodParams[i].ParameterType.Name}: {ex.Message}");
+                }
+            }
+
+            try
+            {
+                var result = method.Invoke(comp, callArgs);
+                EditorUtility.SetDirty(comp);
+                return CommandRegistry.Ok(new JObject
+                {
+                    ["returnType"] = method.ReturnType.Name,
+                    ["result"] = result == null ? null : JToken.FromObject(result)
+                });
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException ?? ex;
+                return CommandRegistry.Error($"Invocation failed: {inner.GetType().Name}: {inner.Message}");
+            }
+        }
+
+        // args: {"id":..,"component":"Foo","field":"Bar"} — tries field first, then property
+        private static JObject GetField(JObject args)
+        {
+            var (comp, member, err) = ResolveMember(args);
+            if (err != null) return err;
+
+            try
+            {
+                object value;
+                if (member is System.Reflection.FieldInfo f)
+                    value = f.GetValue(comp);
+                else if (member is System.Reflection.PropertyInfo p)
+                    value = p.GetValue(comp);
+                else
+                    return CommandRegistry.Error("Member is neither field nor property");
+
+                return CommandRegistry.Ok(new JObject
+                {
+                    ["value"] = value == null ? null : JToken.FromObject(value),
+                    ["type"] = (member is System.Reflection.FieldInfo fi ? fi.FieldType : ((System.Reflection.PropertyInfo)member).PropertyType).Name
+                });
+            }
+            catch (Exception ex)
+            {
+                return CommandRegistry.Error($"Read failed: {ex.Message}");
+            }
+        }
+
+        // args: {"id":..,"component":"Foo","field":"Bar","value":<json>}
+        private static JObject SetField(JObject args)
+        {
+            var (comp, member, err) = ResolveMember(args);
+            if (err != null) return err;
+
+            var valueToken = args["value"];
+            if (valueToken == null) return CommandRegistry.Error("Missing 'value'");
+
+            try
+            {
+                Type targetType;
+                if (member is System.Reflection.FieldInfo f)
+                {
+                    targetType = f.FieldType;
+                    f.SetValue(comp, valueToken.ToObject(targetType));
+                }
+                else if (member is System.Reflection.PropertyInfo p)
+                {
+                    if (!p.CanWrite) return CommandRegistry.Error($"Property is read-only: {p.Name}");
+                    targetType = p.PropertyType;
+                    p.SetValue(comp, valueToken.ToObject(targetType));
+                }
+                else
+                {
+                    return CommandRegistry.Error("Member is neither field nor property");
+                }
+
+                EditorUtility.SetDirty(comp);
+                return CommandRegistry.Ok($"Set {member.Name} on {comp.GetType().Name}");
+            }
+            catch (Exception ex)
+            {
+                return CommandRegistry.Error($"Write failed: {ex.Message}");
+            }
+        }
+
+        // Resolves a component + member (field or property) by name.
+        private static (Component comp, System.Reflection.MemberInfo member, JObject error) ResolveMember(JObject args)
+        {
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return (null, null, CommandRegistry.Error(err));
+
+            var typeName = args["component"]?.Value<string>();
+            var fieldName = args["field"]?.Value<string>();
+            if (string.IsNullOrEmpty(typeName) || string.IsNullOrEmpty(fieldName))
+                return (null, null, CommandRegistry.Error("Required: 'component', 'field'"));
+
+            var type = TypeHelper.FindType(typeName);
+            if (type == null) return (null, null, CommandRegistry.Error($"Type not found: {typeName}"));
+
+            var comp = go.GetComponent(type);
+            if (comp == null) return (null, null, CommandRegistry.Error($"Component not found: {typeName}"));
+
+            bool nonPublic = args["nonPublic"]?.Value<bool>() ?? true;
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
+            if (nonPublic) flags |= System.Reflection.BindingFlags.NonPublic;
+
+            // Walk the type hierarchy to find field or property (including inherited private)
+            var t = type;
+            while (t != null)
+            {
+                var field = t.GetField(fieldName, flags);
+                if (field != null) return (comp, field, null);
+                var prop = t.GetProperty(fieldName, flags);
+                if (prop != null) return (comp, prop, null);
+                t = t.BaseType;
+            }
+
+            return (null, null, CommandRegistry.Error($"Field or property not found: {typeName}.{fieldName}"));
         }
 
         private static JObject SerializeProperties(Component comp, bool structured = false)

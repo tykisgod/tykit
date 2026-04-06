@@ -33,13 +33,16 @@ namespace Tykit
             CommandRegistry.Register(
                 CommandRegistry.Describe(
                     "find",
-                    "Find GameObjects by name, tag, or component type.",
+                    "Find GameObjects by name, tag, type, or hierarchy path. Supports parent scoping and inactive objects.",
                     "scene.query",
                     false,
                     CommandSchema.Object(
                         ("name", CommandSchema.String("Exact GameObject name.")),
                         ("tag", CommandSchema.String("Unity tag.")),
-                        ("type", CommandSchema.String("Component or GameObject type name.")))),
+                        ("type", CommandSchema.String("Component or GameObject type name.")),
+                        ("path", CommandSchema.String("Exact hierarchy path, e.g. ===UI===/Canvas/Panel/Button.")),
+                        ("parentId", CommandSchema.Integer("Limit search to children of the given GameObject id.")),
+                        ("includeInactive", CommandSchema.Boolean("Include inactive GameObjects. Default false.")))),
                 FindGameObjects);
             CommandRegistry.Register(
                 CommandRegistry.Describe(
@@ -94,7 +97,8 @@ namespace Tykit
                 BuildHierarchy(t.GetChild(i), depth + 1, maxDepth, arr);
         }
 
-        // args: {"name":"Ship"} or {"tag":"Player"} or {"type":"Camera"}
+        // args: {"name":"Ship"} or {"tag":"Player"} or {"type":"Camera"} or {"path":"World/Ship"}
+        //   Optional: parentId (limit to subtree), includeInactive
         private static JObject FindGameObjects(JObject args)
         {
             var results = new JArray();
@@ -102,18 +106,57 @@ namespace Tykit
             var name = args["name"]?.Value<string>();
             var tag = args["tag"]?.Value<string>();
             var typeName = args["type"]?.Value<string>();
+            var pathExact = args["path"]?.Value<string>();
+            var parentId = args["parentId"]?.Value<int?>();
+            bool includeInactive = args["includeInactive"]?.Value<bool>() ?? false;
+
+            // Resolve parent scope if given
+            Transform scopeRoot = null;
+            if (parentId.HasValue)
+            {
+                var parentObj = EditorUtility.InstanceIDToObject(parentId.Value) as GameObject;
+                if (parentObj == null)
+                    return CommandRegistry.Error($"parentId not found: {parentId}");
+                scopeRoot = parentObj.transform;
+            }
+
+            // Path exact match (full hierarchy path)
+            if (!string.IsNullOrEmpty(pathExact))
+            {
+                foreach (var go in EnumerateGameObjects(scopeRoot, includeInactive))
+                {
+                    if (GetPath(go.transform) == pathExact)
+                        results.Add(FormatGameObject(go));
+                }
+                return CommandRegistry.Ok(results);
+            }
 
             if (!string.IsNullOrEmpty(name))
             {
-                var go = GameObject.Find(name);
-                if (go != null) results.Add(FormatGameObject(go));
+                if (scopeRoot != null || includeInactive)
+                {
+                    foreach (var go in EnumerateGameObjects(scopeRoot, includeInactive))
+                    {
+                        if (go.name == name)
+                            results.Add(FormatGameObject(go));
+                    }
+                }
+                else
+                {
+                    var go = GameObject.Find(name);
+                    if (go != null) results.Add(FormatGameObject(go));
+                }
             }
             else if (!string.IsNullOrEmpty(tag))
             {
                 try
                 {
                     foreach (var go in GameObject.FindGameObjectsWithTag(tag))
+                    {
+                        if (scopeRoot != null && !IsDescendant(go.transform, scopeRoot)) continue;
+                        if (!includeInactive && !go.activeInHierarchy) continue;
                         results.Add(FormatGameObject(go));
+                    }
                 }
                 catch (UnityException e)
                 {
@@ -126,20 +169,65 @@ namespace Tykit
                 if (type == null)
                     return CommandRegistry.Error($"Type not found: {typeName}");
 
-                foreach (var obj in UnityEngine.Object.FindObjectsByType(type, FindObjectsSortMode.None))
+                var inactiveMode = includeInactive
+                    ? FindObjectsInactive.Include
+                    : FindObjectsInactive.Exclude;
+
+                foreach (var obj in UnityEngine.Object.FindObjectsByType(type, inactiveMode, FindObjectsSortMode.None))
                 {
-                    if (obj is Component c)
-                        results.Add(FormatGameObject(c.gameObject));
-                    else if (obj is GameObject go)
-                        results.Add(FormatGameObject(go));
+                    GameObject go = null;
+                    if (obj is Component c) go = c.gameObject;
+                    else if (obj is GameObject g) go = g;
+                    if (go == null) continue;
+
+                    if (scopeRoot != null && !IsDescendant(go.transform, scopeRoot)) continue;
+                    results.Add(FormatGameObject(go));
                 }
             }
             else
             {
-                return CommandRegistry.Error("Provide 'name', 'tag', or 'type'");
+                return CommandRegistry.Error("Provide 'name', 'tag', 'type', or 'path'");
             }
 
             return CommandRegistry.Ok(results);
+        }
+
+        private static System.Collections.Generic.IEnumerable<GameObject> EnumerateGameObjects(
+            Transform scopeRoot, bool includeInactive)
+        {
+            if (scopeRoot != null)
+            {
+                // Walk subtree
+                var stack = new System.Collections.Generic.Stack<Transform>();
+                stack.Push(scopeRoot);
+                while (stack.Count > 0)
+                {
+                    var t = stack.Pop();
+                    if (includeInactive || t.gameObject.activeInHierarchy)
+                        yield return t.gameObject;
+                    for (int i = 0; i < t.childCount; i++)
+                        stack.Push(t.GetChild(i));
+                }
+                yield break;
+            }
+
+            // All scene GameObjects
+            var inactiveMode = includeInactive
+                ? FindObjectsInactive.Include
+                : FindObjectsInactive.Exclude;
+            foreach (var go in UnityEngine.Object.FindObjectsByType<GameObject>(inactiveMode, FindObjectsSortMode.None))
+                yield return go;
+        }
+
+        private static bool IsDescendant(Transform child, Transform ancestor)
+        {
+            var t = child;
+            while (t != null)
+            {
+                if (t == ancestor) return true;
+                t = t.parent;
+            }
+            return false;
         }
 
         // args: {"id":12345} or {"name":"Ship"}
