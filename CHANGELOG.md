@@ -2,6 +2,40 @@
 
 All notable changes to tykit are documented here.
 
+## [0.5.0] - 2026-04-06
+
+### Added — resilience against blocked main thread
+- `/health` HTTP endpoint (listener-thread, bypasses main thread) — returns queue depth, time since last main-thread tick, and `mainThreadBlocked` heuristic. Use this when POST commands time out to tell modal-dialog blocks from network issues.
+- Main thread heartbeat — `ProcessQueue` updates a timestamp every tick so the listener thread can detect main-thread stalls.
+- `dismiss-dialog` command (Windows only) — best-effort posts `WM_CLOSE` to the foreground dialog owned by Unity. Not portable, but effective against "Save modified scenes?" and similar modals.
+- Auto-save dirty scenes before `play` and `open-scene` — prevents the "Save modified scenes?" dialog that previously blocked tykit main-thread indefinitely.
+
+### Added — batch + scene + prefs (套餐 C/D)
+- `batch` command — execute multiple commands in one request. Reduces round-trip latency for complex workflows (30+ calls → 1 call). Supports `stopOnError`.
+- `save-scene-as` command — save the active scene to a new path via `EditorSceneManager.SaveScene(scene, path, false)`.
+- `set-active-scene` command — switch active scene in multi-scene setups.
+- `editor-prefs` / `player-prefs` commands — read/write/delete EditorPrefs and PlayerPrefs keys. Auto-detects value type from JSON (int/float/bool/string).
+
+### Added — prefab workflow (套餐 C)
+- `prefab-apply` / `prefab-revert` — commit or revert scene changes to the source prefab asset. Closes the prefab editing loop.
+- `prefab-open` / `prefab-close` — enter and exit prefab edit mode for batch modifications to prefab contents.
+- `prefab-source` — get the source prefab asset path of a prefab instance.
+
+### Added — physics queries (套餐 C)
+- `raycast` / `raycast-all` / `overlap-sphere` — run physics queries and return hits as structured JSON. Useful for testing visibility, pathfinding, and trigger detection.
+
+### Added — asset management (套餐 C)
+- `find-assets` command — `AssetDatabase.FindAssets` wrapper with type, folder, and name filters. Returns paths, GUIDs, and instanceIds.
+- `create-scriptable-object` command — create and save a ScriptableObject instance as a project asset.
+- `load-asset` command — resolve an asset by path into name/instanceId/type metadata.
+
+### Added — UI automation (套餐 D)
+- `button-click` command — simulate clicking a UI Button by invoking `onClick.Invoke()`. Respects `interactable` state.
+- `component-copy` / `component-paste` commands — copy component values via `ComponentUtility.CopyComponent` and paste onto another GameObject (with `asNew: true` to add as new component).
+
+### Changed
+- `set-property` now accepts `LayerMask` and `ArraySize` types (stored as integers).
+
 ## [0.4.0] - 2026-04-06
 
 ### Added

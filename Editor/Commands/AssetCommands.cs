@@ -60,6 +60,123 @@ namespace Tykit
             CommandRegistry.Register(
                 CommandRegistry.Describe("refresh", "Run AssetDatabase.Refresh().", "assets.mutate", true),
                 _ => Refresh());
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "find-assets",
+                    "Find assets by type name and optional folder. Returns path + instanceId for each hit.",
+                    "assets.query",
+                    false,
+                    CommandSchema.Object(
+                        ("type", CommandSchema.String("Asset type: Prefab/Material/Scene/Texture2D/ScriptableObject or a custom type name.")),
+                        ("path", CommandSchema.String("Optional folder scope under Assets/.")),
+                        ("name", CommandSchema.String("Optional name substring filter.")))),
+                FindAssets);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "create-scriptable-object",
+                    "Create a ScriptableObject instance and save it as an asset.",
+                    "assets.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("type", CommandSchema.String("ScriptableObject type name.")),
+                        ("path", CommandSchema.String("Asset path, e.g. Assets/Data/NewItem.asset.")))),
+                CreateScriptableObject);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "load-asset",
+                    "Load an asset by path and return basic metadata.",
+                    "assets.query",
+                    false,
+                    CommandSchema.Object(
+                        ("path", CommandSchema.String("Asset path under Assets/.")))),
+                LoadAsset);
+        }
+
+        // args: {"type":"Prefab","path":"Assets/Prefabs/","name":"Ship"}
+        private static JObject FindAssets(JObject args)
+        {
+            var typeName = args["type"]?.Value<string>();
+            var folder = args["path"]?.Value<string>();
+            var nameFilter = args["name"]?.Value<string>();
+
+            string filter = !string.IsNullOrEmpty(typeName) ? $"t:{typeName}" : "";
+            if (!string.IsNullOrEmpty(nameFilter))
+                filter += " " + nameFilter;
+
+            string[] searchPaths = string.IsNullOrEmpty(folder) ? null : new[] { folder };
+            var guids = searchPaths != null
+                ? AssetDatabase.FindAssets(filter, searchPaths)
+                : AssetDatabase.FindAssets(filter);
+
+            var results = new JArray();
+            foreach (var guid in guids)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.IsNullOrEmpty(path)) continue;
+                var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+                results.Add(new JObject
+                {
+                    ["path"] = path,
+                    ["guid"] = guid,
+                    ["name"] = asset != null ? asset.name : System.IO.Path.GetFileNameWithoutExtension(path),
+                    ["instanceId"] = asset != null ? asset.GetInstanceID() : 0,
+                    ["type"] = asset != null ? asset.GetType().Name : null
+                });
+            }
+            return CommandRegistry.Ok(new JObject
+            {
+                ["count"] = results.Count,
+                ["assets"] = results
+            });
+        }
+
+        // args: {"type":"ItemConfig","path":"Assets/Data/NewItem.asset"}
+        private static JObject CreateScriptableObject(JObject args)
+        {
+            var typeName = args["type"]?.Value<string>();
+            var path = args["path"]?.Value<string>();
+            if (string.IsNullOrEmpty(typeName) || string.IsNullOrEmpty(path))
+                return CommandRegistry.Error("Required: 'type', 'path'");
+            if (!IsValidAssetPath(path))
+                return CommandRegistry.Error("Path must start with 'Assets/' and not contain '..'");
+
+            var type = TypeHelper.FindType(typeName);
+            if (type == null)
+                return CommandRegistry.Error($"Type not found: {typeName}");
+            if (!typeof(ScriptableObject).IsAssignableFrom(type))
+                return CommandRegistry.Error($"Type is not a ScriptableObject: {typeName}");
+
+            EnsureDirectoryExists(path);
+            var instance = ScriptableObject.CreateInstance(type);
+            AssetDatabase.CreateAsset(instance, path);
+            AssetDatabase.SaveAssets();
+
+            return CommandRegistry.Ok(new JObject
+            {
+                ["path"] = path,
+                ["instanceId"] = instance.GetInstanceID(),
+                ["type"] = type.Name
+            });
+        }
+
+        // args: {"path":"Assets/Prefabs/Ship.prefab"}
+        private static JObject LoadAsset(JObject args)
+        {
+            var path = args["path"]?.Value<string>();
+            if (string.IsNullOrEmpty(path))
+                return CommandRegistry.Error("Missing 'path'");
+
+            var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+            if (asset == null)
+                return CommandRegistry.Error($"Asset not found: {path}");
+
+            return CommandRegistry.Ok(new JObject
+            {
+                ["path"] = path,
+                ["name"] = asset.name,
+                ["instanceId"] = asset.GetInstanceID(),
+                ["type"] = asset.GetType().Name
+            });
         }
 
         // args: {"source":"Ship","path":"Assets/Res/Prefabs/Ship.prefab"}

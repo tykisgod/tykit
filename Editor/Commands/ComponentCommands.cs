@@ -196,6 +196,42 @@ namespace Tykit
                         ("value", new JObject { ["description"] = "JSON value (int/float/bool/string/array/object)." }),
                         ("nonPublic", CommandSchema.Boolean("Allow accessing non-public members. Default true.")))),
                 SetField);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "button-click",
+                    "Simulate clicking a UI Button by invoking its onClick event.",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("Button GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")))),
+                ButtonClick);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "component-copy",
+                    "Copy a component's values to the internal clipboard. Use component-paste to paste onto another GameObject.",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type name to copy.")))),
+                ComponentCopy);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "component-paste",
+                    "Paste previously copied component values onto this GameObject. Uses 'asNew' to add as new component instead of overwriting existing.",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("component", CommandSchema.String("Component type to paste values onto.")),
+                        ("asNew", CommandSchema.Boolean("If true, paste as a new component instead of overwriting. Default false.")))),
+                ComponentPaste);
         }
 
         // args: {"id":12345,"component":"BoxCollider"} or {"name":"Ship","component":"BoxCollider"}
@@ -637,6 +673,95 @@ namespace Tykit
             }
         }
 
+        // args: {"id":<buttonId>} — invokes button.onClick.Invoke() via reflection
+        private static JObject ButtonClick(JObject args)
+        {
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return CommandRegistry.Error(err);
+
+            var buttonType = TypeHelper.FindType("Button");
+            if (buttonType == null) return CommandRegistry.Error("UI.Button type not found");
+
+            var button = go.GetComponent(buttonType);
+            if (button == null) return CommandRegistry.Error($"No Button on {go.name}");
+
+            // Check interactable
+            var interactableProp = buttonType.GetProperty("interactable");
+            if (interactableProp != null && !(bool)interactableProp.GetValue(button))
+                return CommandRegistry.Error("Button is not interactable");
+
+            // Get onClick and invoke
+            var onClickProp = buttonType.GetProperty("onClick");
+            if (onClickProp == null) return CommandRegistry.Error("Button has no onClick property");
+            var onClick = onClickProp.GetValue(button);
+            if (onClick == null) return CommandRegistry.Error("onClick is null");
+
+            var invokeMethod = onClick.GetType().GetMethod("Invoke", Type.EmptyTypes);
+            if (invokeMethod == null) return CommandRegistry.Error("onClick.Invoke() not found");
+
+            try
+            {
+                invokeMethod.Invoke(onClick, null);
+                return CommandRegistry.Ok($"Clicked {go.name}");
+            }
+            catch (Exception ex)
+            {
+                var inner = ex.InnerException ?? ex;
+                return CommandRegistry.Error($"onClick handler threw: {inner.Message}");
+            }
+        }
+
+        // args: {"id":..,"component":"Rigidbody"}
+        private static JObject ComponentCopy(JObject args)
+        {
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return CommandRegistry.Error(err);
+
+            var typeName = args["component"]?.Value<string>();
+            if (string.IsNullOrEmpty(typeName)) return CommandRegistry.Error("Missing 'component'");
+            var type = TypeHelper.FindType(typeName);
+            if (type == null) return CommandRegistry.Error($"Type not found: {typeName}");
+
+            var comp = go.GetComponent(type);
+            if (comp == null) return CommandRegistry.Error($"Component not found: {typeName}");
+
+            bool ok = UnityEditorInternal.ComponentUtility.CopyComponent(comp);
+            return ok
+                ? CommandRegistry.Ok($"Copied {typeName} from {go.name}")
+                : CommandRegistry.Error("Copy failed");
+        }
+
+        // args: {"id":..,"component":"Rigidbody","asNew":false}
+        private static JObject ComponentPaste(JObject args)
+        {
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return CommandRegistry.Error(err);
+
+            bool asNew = args["asNew"]?.Value<bool>() ?? false;
+
+            if (asNew)
+            {
+                bool added = UnityEditorInternal.ComponentUtility.PasteComponentAsNew(go);
+                return added
+                    ? CommandRegistry.Ok($"Pasted as new component on {go.name}")
+                    : CommandRegistry.Error("Paste as new failed");
+            }
+
+            // Paste values onto existing component
+            var typeName = args["component"]?.Value<string>();
+            if (string.IsNullOrEmpty(typeName)) return CommandRegistry.Error("Missing 'component' (or pass asNew:true)");
+            var type = TypeHelper.FindType(typeName);
+            if (type == null) return CommandRegistry.Error($"Type not found: {typeName}");
+
+            var comp = go.GetComponent(type);
+            if (comp == null) return CommandRegistry.Error($"Component not found: {typeName}");
+
+            bool ok = UnityEditorInternal.ComponentUtility.PasteComponentValues(comp);
+            return ok
+                ? CommandRegistry.Ok($"Pasted values onto {go.name}.{typeName}")
+                : CommandRegistry.Error("Paste values failed");
+        }
+
         // Resolves a component + member (field or property) by name.
         private static (Component comp, System.Reflection.MemberInfo member, JObject error) ResolveMember(JObject args)
         {
@@ -771,6 +896,8 @@ namespace Tykit
             switch (prop.propertyType)
             {
                 case SerializedPropertyType.Integer:
+                case SerializedPropertyType.LayerMask:
+                case SerializedPropertyType.ArraySize:
                     prop.intValue = token.Value<int>(); return true;
                 case SerializedPropertyType.Float:
                     prop.floatValue = token.Value<float>(); return true;

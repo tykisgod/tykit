@@ -22,6 +22,10 @@ namespace Tykit
         private static int _activePort;
         private static readonly ConcurrentQueue<RequestContext> _requestQueue = new();
 
+        // Heartbeat — updated by ProcessQueue on main thread. Listener thread reads it
+        // to detect when the main thread is blocked (e.g. by a modal dialog).
+        private static long _lastProcessTicks = DateTime.UtcNow.Ticks;
+
         private static readonly string ServerInfoFile = Path.Combine(
             Application.dataPath, "..", "Temp", "tykit.json");
 
@@ -155,6 +159,36 @@ namespace Tykit
                         continue;
                     }
 
+                    // /health — listener-thread diagnostic: queue state + main thread heartbeat.
+                    // Use this when POST commands time out to detect blocked main thread (modal dialogs).
+                    if (ctx.Request.Url.AbsolutePath == "/health")
+                    {
+                        double sinceProcessSec = (DateTime.UtcNow - new DateTime(_lastProcessTicks, DateTimeKind.Utc)).TotalSeconds;
+                        int queueDepth = _requestQueue.Count;
+                        double oldestQueuedSec = 0;
+                        if (_requestQueue.TryPeek(out var oldest))
+                            oldestQueuedSec = (DateTime.UtcNow - oldest.EnqueueTime).TotalSeconds;
+
+                        // Heuristic: main thread considered "blocked" if > 5s since last process AND queue non-empty
+                        bool mainThreadBlocked = sinceProcessSec > 5 && queueDepth > 0;
+
+                        var health = new JObject
+                        {
+                            ["status"] = mainThreadBlocked ? "blocked" : "ok",
+                            ["port"] = _activePort,
+                            ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id,
+                            ["queueDepth"] = queueDepth,
+                            ["oldestQueuedSec"] = Math.Round(oldestQueuedSec, 2),
+                            ["mainThreadIdleSec"] = Math.Round(sinceProcessSec, 2),
+                            ["mainThreadBlocked"] = mainThreadBlocked,
+                            ["hint"] = mainThreadBlocked
+                                ? "Main thread not processing. Check Unity window for modal dialog (save/compile error/import), or call dismiss-dialog."
+                                : "OK"
+                        };
+                        Respond(ctx, 200, health.ToString());
+                        continue;
+                    }
+
                     _requestQueue.Enqueue(new RequestContext
                     {
                         HttpContext = ctx,
@@ -173,6 +207,9 @@ namespace Tykit
 
         private static void ProcessQueue()
         {
+            // Heartbeat for /health endpoint (listener thread reads this to detect blocked main thread)
+            Interlocked.Exchange(ref _lastProcessTicks, DateTime.UtcNow.Ticks);
+
             while (_requestQueue.TryDequeue(out var rc))
             {
                 // Timeout stale requests

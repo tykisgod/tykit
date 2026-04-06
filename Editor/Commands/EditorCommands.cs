@@ -127,10 +127,89 @@ namespace Tykit
             CommandRegistry.Register(
                 CommandRegistry.Describe("list-scenes", "List all scene assets under Assets/.", "scene.query", false),
                 _ => ListScenes());
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "save-scene-as",
+                    "Save the active scene to a new asset path.",
+                    "scene.control",
+                    true,
+                    CommandSchema.Object(
+                        ("path", CommandSchema.String("Target scene asset path.")))),
+                SaveSceneAs);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "set-active-scene",
+                    "Set the active scene by path or name when multiple scenes are loaded.",
+                    "scene.control",
+                    true,
+                    CommandSchema.Object(
+                        ("path", CommandSchema.String("Scene asset path.")),
+                        ("name", CommandSchema.String("Scene name (without extension).")))),
+                SetActiveScene);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "dismiss-dialog",
+                    "Attempt to dismiss a modal dialog blocking Unity's main thread (Windows only). Best-effort; returns what it tried.",
+                    "editor.control",
+                    true),
+                _ => DismissDialog());
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "batch",
+                    "Execute multiple commands in one request. Returns an array of results in order.",
+                    "meta.control",
+                    true,
+                    CommandSchema.Object(
+                        ("commands", CommandSchema.Array(new JObject(), "Array of {command, args} objects.")),
+                        ("stopOnError", CommandSchema.Boolean("If true, abort the batch on first error. Default false.")))),
+                BatchExecute);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "editor-prefs",
+                    "Read or write an EditorPrefs value. Omit 'value' to read; include it to write.",
+                    "editor.prefs",
+                    true,
+                    CommandSchema.Object(
+                        ("key", CommandSchema.String("EditorPrefs key.")),
+                        ("value", new JObject { ["description"] = "Optional value (string/int/float/bool). Omit to read." }),
+                        ("type", CommandSchema.String("When reading: 'string'/'int'/'float'/'bool'. Default 'string'.")),
+                        ("delete", CommandSchema.Boolean("If true, delete the key.")))),
+                EditorPrefsCmd);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
+                    "player-prefs",
+                    "Read or write a PlayerPrefs value. Omit 'value' to read; include it to write.",
+                    "editor.prefs",
+                    true,
+                    CommandSchema.Object(
+                        ("key", CommandSchema.String("PlayerPrefs key.")),
+                        ("value", new JObject { ["description"] = "Optional value (string/int/float). Omit to read." }),
+                        ("type", CommandSchema.String("When reading: 'string'/'int'/'float'. Default 'string'.")),
+                        ("delete", CommandSchema.Boolean("If true, delete the key.")))),
+                PlayerPrefsCmd);
         }
 
         private static JObject SetPlayMode(bool play)
         {
+            // Auto-save dirty scenes before entering play mode to prevent
+            // the "Save modified scenes?" modal dialog from blocking the main thread.
+            if (play)
+            {
+                try
+                {
+                    for (int i = 0; i < SceneManager.sceneCount; i++)
+                    {
+                        var scene = SceneManager.GetSceneAt(i);
+                        if (scene.isLoaded && scene.isDirty && !string.IsNullOrEmpty(scene.path))
+                            EditorSceneManager.SaveScene(scene);
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[tykit] Auto-save before play failed: {e.Message}");
+                }
+            }
+
             EditorApplication.isPlaying = play;
             return CommandRegistry.Ok(play ? "Play mode starting" : "Play mode stopping");
         }
@@ -299,6 +378,21 @@ namespace Tykit
             if (EditorApplication.isPlaying)
                 return CommandRegistry.Error("Cannot open scene while in Play mode");
 
+            // Auto-save dirty scenes before switching to prevent "Save modified scene?" modal.
+            try
+            {
+                for (int i = 0; i < SceneManager.sceneCount; i++)
+                {
+                    var s = SceneManager.GetSceneAt(i);
+                    if (s.isLoaded && s.isDirty && !string.IsNullOrEmpty(s.path))
+                        EditorSceneManager.SaveScene(s);
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[tykit] Auto-save before open-scene failed: {e.Message}");
+            }
+
             var scene = EditorSceneManager.OpenScene(path, mode);
             return CommandRegistry.Ok(new JObject
             {
@@ -396,6 +490,192 @@ namespace Tykit
                     _consoleLogs.TryDequeue(out _);
                 _logCount = _consoleLogs.Count;
             }
+        }
+
+        // args: {"path":"Assets/Scenes/NewScene.unity"}
+        private static JObject SaveSceneAs(JObject args)
+        {
+            var path = args["path"]?.Value<string>();
+            if (string.IsNullOrEmpty(path))
+                return CommandRegistry.Error("Missing 'path' field");
+
+            var scene = SceneManager.GetActiveScene();
+            if (!scene.IsValid())
+                return CommandRegistry.Error("No active scene to save");
+
+            bool ok = EditorSceneManager.SaveScene(scene, path, false);
+            return ok
+                ? CommandRegistry.Ok(new JObject { ["path"] = path })
+                : CommandRegistry.Error("Save failed");
+        }
+
+        // args: {"path":"Assets/Scenes/Foo.unity"} or {"name":"Foo"}
+        private static JObject SetActiveScene(JObject args)
+        {
+            var path = args["path"]?.Value<string>();
+            var name = args["name"]?.Value<string>();
+
+            for (int i = 0; i < SceneManager.sceneCount; i++)
+            {
+                var s = SceneManager.GetSceneAt(i);
+                if (!s.isLoaded) continue;
+                if ((!string.IsNullOrEmpty(path) && s.path == path) ||
+                    (!string.IsNullOrEmpty(name) && s.name == name))
+                {
+                    SceneManager.SetActiveScene(s);
+                    return CommandRegistry.Ok(new JObject { ["name"] = s.name, ["path"] = s.path });
+                }
+            }
+            return CommandRegistry.Error("Scene not found among loaded scenes");
+        }
+
+        // Best-effort modal dialog dismissal (Windows only).
+        // Finds the foreground dialog owned by the Unity process and sends WM_CLOSE.
+        private static JObject DismissDialog()
+        {
+#if UNITY_EDITOR_WIN
+            try
+            {
+                IntPtr hwnd = GetForegroundWindow();
+                if (hwnd == IntPtr.Zero)
+                    return CommandRegistry.Error("No foreground window");
+
+                GetWindowThreadProcessId(hwnd, out uint pid);
+                int unityPid = System.Diagnostics.Process.GetCurrentProcess().Id;
+                if (pid != unityPid)
+                    return CommandRegistry.Error($"Foreground window belongs to pid {pid}, not Unity ({unityPid})");
+
+                // WM_CLOSE = 0x0010
+                const uint WM_CLOSE = 0x0010;
+                PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                return CommandRegistry.Ok($"Sent WM_CLOSE to hwnd {hwnd.ToInt64():X}");
+            }
+            catch (Exception e)
+            {
+                return CommandRegistry.Error($"dismiss-dialog failed: {e.Message}");
+            }
+#else
+            return CommandRegistry.Error("dismiss-dialog is Windows-only");
+#endif
+        }
+
+#if UNITY_EDITOR_WIN
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+#endif
+
+        // args: {"commands":[{"command":"find","args":{...}},{"command":"...","args":{...}}], "stopOnError":false}
+        private static JObject BatchExecute(JObject args)
+        {
+            var cmds = args["commands"] as JArray;
+            if (cmds == null)
+                return CommandRegistry.Error("Missing 'commands' array");
+
+            bool stopOnError = args["stopOnError"]?.Value<bool>() ?? false;
+            var results = new JArray();
+
+            foreach (var cmdToken in cmds)
+            {
+                if (!(cmdToken is JObject cmdObj))
+                {
+                    results.Add(CommandRegistry.Error("Each batch item must be an object"));
+                    if (stopOnError) break;
+                    continue;
+                }
+
+                try
+                {
+                    var result = CommandRegistry.Execute(cmdObj.ToString());
+                    results.Add(result);
+                    if (stopOnError && result["success"]?.Value<bool>() != true)
+                        break;
+                }
+                catch (Exception e)
+                {
+                    results.Add(CommandRegistry.Error($"Batch item failed: {e.Message}"));
+                    if (stopOnError) break;
+                }
+            }
+
+            return CommandRegistry.Ok(results);
+        }
+
+        // args: {"key":"Foo.Bar"} (read) or {"key":"Foo.Bar","value":"..."} (write) or {"key":"Foo.Bar","delete":true}
+        private static JObject EditorPrefsCmd(JObject args)
+        {
+            var key = args["key"]?.Value<string>();
+            if (string.IsNullOrEmpty(key)) return CommandRegistry.Error("Missing 'key'");
+
+            if (args["delete"]?.Value<bool>() == true)
+            {
+                EditorPrefs.DeleteKey(key);
+                return CommandRegistry.Ok($"Deleted {key}");
+            }
+
+            var valueToken = args["value"];
+            if (valueToken != null)
+            {
+                switch (valueToken.Type)
+                {
+                    case JTokenType.Integer: EditorPrefs.SetInt(key, valueToken.Value<int>()); break;
+                    case JTokenType.Float: EditorPrefs.SetFloat(key, valueToken.Value<float>()); break;
+                    case JTokenType.Boolean: EditorPrefs.SetBool(key, valueToken.Value<bool>()); break;
+                    default: EditorPrefs.SetString(key, valueToken.Value<string>()); break;
+                }
+                return CommandRegistry.Ok($"Set {key}");
+            }
+
+            var type = args["type"]?.Value<string>() ?? "string";
+            object value = type switch
+            {
+                "int" => (object)EditorPrefs.GetInt(key),
+                "float" => EditorPrefs.GetFloat(key),
+                "bool" => EditorPrefs.GetBool(key),
+                _ => EditorPrefs.GetString(key)
+            };
+            return CommandRegistry.Ok(new JObject { ["key"] = key, ["value"] = JToken.FromObject(value) });
+        }
+
+        private static JObject PlayerPrefsCmd(JObject args)
+        {
+            var key = args["key"]?.Value<string>();
+            if (string.IsNullOrEmpty(key)) return CommandRegistry.Error("Missing 'key'");
+
+            if (args["delete"]?.Value<bool>() == true)
+            {
+                PlayerPrefs.DeleteKey(key);
+                PlayerPrefs.Save();
+                return CommandRegistry.Ok($"Deleted {key}");
+            }
+
+            var valueToken = args["value"];
+            if (valueToken != null)
+            {
+                switch (valueToken.Type)
+                {
+                    case JTokenType.Integer: PlayerPrefs.SetInt(key, valueToken.Value<int>()); break;
+                    case JTokenType.Float: PlayerPrefs.SetFloat(key, valueToken.Value<float>()); break;
+                    default: PlayerPrefs.SetString(key, valueToken.Value<string>()); break;
+                }
+                PlayerPrefs.Save();
+                return CommandRegistry.Ok($"Set {key}");
+            }
+
+            var type = args["type"]?.Value<string>() ?? "string";
+            object value = type switch
+            {
+                "int" => (object)PlayerPrefs.GetInt(key),
+                "float" => PlayerPrefs.GetFloat(key),
+                _ => PlayerPrefs.GetString(key)
+            };
+            return CommandRegistry.Ok(new JObject { ["key"] = key, ["value"] = JToken.FromObject(value) });
         }
 
         private class LogEntry
