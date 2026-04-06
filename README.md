@@ -43,23 +43,54 @@ curl -s -X POST http://localhost:$PORT/ \
   -d '{"command":"status"}' -H 'Content-Type: application/json'
 ```
 
+## Two HTTP Channels
+
+tykit listens on a single port but exposes two parallel command channels:
+
+| Channel | Endpoint | Runs on |
+|---|---|---|
+| **Main-thread queue** | `POST /` | Unity main thread (queued via `EditorApplication.update`) |
+| **Listener-thread direct** | `GET /ping`, `/health`, `/focus-unity`, `/dismiss-dialog` | Listener thread (never blocks on the main thread) |
+
+The listener-thread endpoints (v0.5.0) let you recover from a blocked main thread — see [Main Thread Recovery](#main-thread-recovery).
+
 ## API Reference
 
-### Read Commands
+### Diagnostics
 
 | Command | Args | Description |
 |---------|------|-------------|
 | `status` | — | Editor state (isPlaying, isCompiling, activeScene) |
-| `compile-status` | — | Compilation state (isCompiling, isUpdating) |
+| `commands` | — | List all registered commands |
+| `compile-status` | — | Compilation state |
 | `get-compile-result` | — | Last compile result (state, errors, duration) |
-| `console` | `count`, `filter` | Read console logs (last N entries, optional filter) |
-| `find` | `name`, `type`, `tag` | Find GameObjects in scene |
-| `inspect` | `id` or `name` | Inspect GameObject components and properties |
-| `get-properties` | `id` | List serialized properties of a component |
-| `hierarchy` | `depth` | Scene hierarchy tree (default depth 3) |
-| `commands` | — | List all available commands |
 
-### Write Commands
+### Compile and Test
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `compile` | — | Trigger compilation |
+| `run-tests` | `mode`, `filter`, `assemblyNames` | Start EditMode/PlayMode tests |
+| `get-test-result` | `runId` (optional) | Poll test results |
+
+### Console
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `console` | `count`, `filter` | Read recent console entries |
+| `clear-console` | — | Clear console buffer |
+
+### Scene and Hierarchy
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `find` | `name` / `type` / `tag` / `parentId` / `path` / `includeInactive` | Find GameObjects (v0.4 added scoping + inactive support) |
+| `select` | `id` / `ids` (multi) / `ping` | Select object(s); v0.4 added multi-select |
+| `ping` | `id` / `assetPath` | Highlight without selecting (v0.4) |
+| `inspect` | `id` / `name` | Inspect components, now includes `children` array (v0.3) |
+| `hierarchy` | `depth` / `id` / `path` / `name` | Scene hierarchy tree, optionally subtree (v0.3) |
+
+### GameObject Lifecycle
 
 | Command | Args | Description |
 |---------|------|-------------|
@@ -67,37 +98,102 @@ curl -s -X POST http://localhost:$PORT/ \
 | `instantiate` | `prefab`, `name` | Instantiate prefab |
 | `destroy` | `id` | Destroy GameObject |
 | `set-transform` | `id`, `position`, `rotation`, `scale` | Modify transform |
+| `set-name` | `id`, `name` | Rename GameObject (v0.3) |
+
+### Components
+
+| Command | Args | Description |
+|---------|------|-------------|
 | `add-component` | `id`, `component` | Add component to GameObject |
-| `set-property` | `id`, `component`, `property`, `value` | Set serialized property |
+| `component-copy` | `id`, `component` | Copy component values via `ComponentUtility` (v0.5) |
+| `component-paste` | `id`, `component` / `asNew` | Paste copied component, or add as new (v0.5) |
+
+### Properties (Serialized)
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `get-properties` | `id` / `structured: true` | List serialized properties; `structured` returns native JSON types (v0.3) |
+| `set-property` | `id`, `component`, `property`, `value` | Set serialized property — accepts native JSON for `Vector*`/`Quaternion`/`Color`/`Rect`/`Bounds` (v0.3), `LayerMask`/`ArraySize` (v0.5) |
+
+### Reflection (Code-Level) — v0.4
+
+> Bypasses SerializedProperty entirely. Walks the type hierarchy for inherited private members. Finally makes runtime testing viable without scaffolding code into your project.
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `call-method` | `id`, `component`, `method`, `parameters` | Invoke any public/non-public method via reflection |
+| `get-field` | `id`, `component`, `field` | Read code-level field or property |
+| `set-field` | `id`, `component`, `field`, `value` | Write code-level field or property |
+
+### Arrays
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `get-array` | `id`, `component`, `property` | Read entire serialized array/list as structured JSON (v0.4) |
+| `array-size` / `array-insert` / `array-delete` | — | Read/set size, insert at index, delete element (v0.3) |
+| `array-move` | `from`, `to` | Reorder via `MoveArrayElement` (v0.4) |
+
+### Prefabs (v0.5)
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `prefab-apply` / `prefab-revert` | `id` | Commit or revert scene changes to source prefab asset |
+| `prefab-open` / `prefab-close` | `path` / `save` | Enter / exit prefab edit mode |
+| `prefab-source` | `id` | Get source prefab asset path of an instance |
+
+### Physics Queries (v0.5)
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `raycast` | `origin`, `direction`, `maxDistance`, `layerMask` | Single raycast |
+| `raycast-all` | same | All hits along ray |
+| `overlap-sphere` | `position`, `radius`, `layerMask` | Colliders intersecting a sphere |
+
+### Assets (v0.5)
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `find-assets` | `type`, `folder`, `name` | `AssetDatabase.FindAssets` wrapper |
+| `create-scriptable-object` | `type`, `path` | Create + save a `ScriptableObject` instance |
+| `load-asset` | `path` | Resolve asset by path |
+| `refresh` | — | `AssetDatabase.Refresh()` |
+
+### UI
+
+| Command | Args | Description |
+|---------|------|-------------|
+| `set-text` | `id`, `text`, `inChildren` | Set text on `TMP_Text` / `TextMeshProUGUI` / `Text` (v0.3) |
+| `button-click` | `id` | Simulate `onClick.Invoke()` (v0.5) |
 
 ### Editor Control
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `play` | — | Enter Play Mode |
-| `stop` | — | Exit Play Mode |
-| `pause` | — | Pause Play Mode |
+| `play` | — | Enter Play Mode (auto-saves dirty scenes first, v0.5) |
+| `stop` / `pause` | — | Play Mode control |
 | `save-scene` | — | Save current scene |
-| `open-scene` | `path` | Open scene by asset path |
-| `refresh` | — | AssetDatabase.Refresh() |
-| `clear-console` | — | Clear console buffer |
+| `save-scene-as` | `path` | Save active scene to a new path (v0.5) |
+| `set-active-scene` | `path` / `name` | Switch active scene in multi-scene setups (v0.5) |
+| `open-scene` | `path` | Open scene by asset path (auto-saves dirty scenes first, v0.5) |
 | `menu` | `item` | Execute menu item |
+| `focus-unity` / `dismiss-dialog` | — | Windows-only main-thread variants — see Recovery section for the listener-thread versions (v0.5) |
 
-### Testing
+### Prefs (v0.5)
 
 | Command | Args | Description |
 |---------|------|-------------|
-| `run-tests` | `mode`, `filter`, `assemblyNames` | Start EditMode/PlayMode tests |
-| `get-test-result` | `runId` (optional) | Poll test results |
+| `editor-prefs` | `action: get/set/delete`, `key`, `value` | Read/write/delete `EditorPrefs` |
+| `player-prefs` | same | Read/write/delete `PlayerPrefs` |
 
 ### Batch
 
-Execute multiple commands in one call:
+Execute multiple commands in one HTTP round-trip — reduces 30+ calls to 1:
 
 ```bash
 curl -s -X POST http://localhost:$PORT/ -d '{
   "command": "batch",
   "args": {
+    "stopOnError": true,
     "commands": [
       {"command": "create", "args": {"name": "Sun", "primitiveType": "Sphere"}},
       {"command": "set-transform", "args": {"id": "$0", "scale": [3,3,3]}}
@@ -107,6 +203,28 @@ curl -s -X POST http://localhost:$PORT/ -d '{
 ```
 
 `$N` references the `instanceId` returned by the Nth command in the batch.
+
+## Main Thread Recovery
+
+(v0.5.0) When a `POST /` command times out — most commonly because Unity is showing a modal dialog or background-throttling a domain reload — the listener-thread `GET` endpoints can drag Unity back into a working state without depending on the stuck main thread:
+
+| Endpoint | Effect | Platform |
+|---|---|---|
+| `GET /ping` | Listener thread pong (proves the server is alive) | All |
+| `GET /health` | Returns queue depth + time since last main-thread tick + `mainThreadBlocked` heuristic | All |
+| `GET /focus-unity` | `SetForegroundWindow` on Unity's main window — unsticks background-throttled operations | Windows only |
+| `GET /dismiss-dialog` | Posts `WM_CLOSE` to the foreground dialog owned by Unity | Windows only |
+
+Recovery flow:
+
+```bash
+curl -s http://localhost:$PORT/ping            # listener alive?
+curl -s http://localhost:$PORT/health          # mainThreadBlocked: true/false?
+curl -s http://localhost:$PORT/focus-unity     # background throttled? bring Unity to front
+curl -s http://localhost:$PORT/dismiss-dialog  # modal dialog? close it
+```
+
+This is **the** differentiator vs. other Unity bridges. They all queue commands on the main thread that's already stuck and hang until they hit a timeout. tykit's listener thread stays alive throughout.
 
 ## CLI Tool
 
@@ -177,61 +295,157 @@ curl -s -X POST http://localhost:$PORT/ \
   -d '{"command":"status"}' -H 'Content-Type: application/json'
 ```
 
+## 两个 HTTP 通道
+
+tykit 在单个端口上暴露两条并行命令通道：
+
+| 通道 | 端点 | 运行线程 |
+|---|---|---|
+| **主线程队列** | `POST /` | Unity 主线程（通过 `EditorApplication.update` 排队） |
+| **监听线程直通** | `GET /ping`、`/health`、`/focus-unity`、`/dismiss-dialog` | 监听线程（永远不阻塞在主线程上） |
+
+监听线程端点（v0.5.0）让你能在主线程被卡住时恢复——参见[主线程恢复](#主线程恢复)章节。
+
 ## API 参考
 
-### 读取命令
+### 诊断
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
-| `status` | — | Editor 状态（isPlaying, isCompiling, activeScene） |
-| `compile-status` | — | 编译状态（isCompiling, isUpdating） |
-| `get-compile-result` | — | 编译结果（state, errors, duration） |
-| `console` | `count`, `filter` | 控制台日志（最近 N 条，可选过滤） |
-| `find` | `name`, `type`, `tag` | 查找场景中的 GameObject |
-| `inspect` | `id` 或 `name` | 检视 GameObject 组件和属性 |
-| `get-properties` | `id` | 列出组件的序列化属性 |
-| `hierarchy` | `depth` | 场景层级树（默认深度 3） |
-| `commands` | — | 列出所有可用命令 |
+| `status` | — | Editor 状态概览（isPlaying、isCompiling、activeScene） |
+| `commands` | — | 列出所有已注册命令 |
+| `compile-status` | — | 当前编译状态 |
+| `get-compile-result` | — | 最近一次编译结果（错误和耗时） |
 
-### 写入命令
+### 编译与测试
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
-| `create` | `name`, `primitiveType`, `position` | 创建 GameObject |
-| `instantiate` | `prefab`, `name` | 实例化预制体 |
+| `compile` | — | 触发编译 |
+| `run-tests` | `mode`、`filter`、`assemblyNames` | 启动 EditMode/PlayMode 测试 |
+| `get-test-result` | `runId`（可选） | 查询测试结果 |
+
+### 控制台
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `console` | `count`、`filter` | 读取最近控制台日志 |
+| `clear-console` | — | 清空控制台缓冲区 |
+
+### 场景与层级
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `find` | `name` / `type` / `tag` / `parentId` / `path` / `includeInactive` | 查找 GameObject（v0.4 增加子树范围与 inactive 支持） |
+| `select` | `id` / `ids`（多选）/ `ping` | 在编辑器中选中对象；v0.4 增加多选 |
+| `ping` | `id` / `assetPath` | 高亮但不选中（v0.4） |
+| `inspect` | `id` / `name` | 检视组件，v0.3 起返回 `children` 数组 |
+| `hierarchy` | `depth` / `id` / `path` / `name` | 场景层级树，可选指定子树（v0.3） |
+
+### GameObject 生命周期
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `create` | `name`、`primitiveType`、`position` | 创建 GameObject |
+| `instantiate` | `prefab`、`name` | 实例化预制体 |
 | `destroy` | `id` | 销毁 GameObject |
-| `set-transform` | `id`, `position`, `rotation`, `scale` | 修改 Transform |
-| `add-component` | `id`, `component` | 添加组件 |
-| `set-property` | `id`, `component`, `property`, `value` | 设置序列化属性 |
+| `set-transform` | `id`、`position`、`rotation`、`scale` | 修改 Transform |
+| `set-name` | `id`、`name` | 重命名 GameObject（v0.3） |
+
+### 组件
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `add-component` | `id`、`component` | 添加组件 |
+| `component-copy` | `id`、`component` | 通过 `ComponentUtility` 复制组件值（v0.5） |
+| `component-paste` | `id`、`component` / `asNew` | 粘贴组件，或作为新组件添加（v0.5） |
+
+### 属性（序列化）
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `get-properties` | `id` / `structured: true` | 列出序列化属性；`structured` 返回原生 JSON 类型（v0.3） |
+| `set-property` | `id`、`component`、`property`、`value` | 设置序列化属性——v0.3 起接受 `Vector*`/`Quaternion`/`Color`/`Rect`/`Bounds` 的原生 JSON，v0.5 起支持 `LayerMask`/`ArraySize` |
+
+### 反射（代码层）—— v0.4
+
+> 完全绕过 SerializedProperty。沿类型层级查找继承的私有成员。让"AI 跑运行时测试"无需在项目中预埋脚手架代码。
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `call-method` | `id`、`component`、`method`、`parameters` | 通过反射调用任意 public/non-public 方法 |
+| `get-field` | `id`、`component`、`field` | 读取代码层字段或属性 |
+| `set-field` | `id`、`component`、`field`、`value` | 写入代码层字段或属性 |
+
+### 数组
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `get-array` | `id`、`component`、`property` | 读取整个序列化数组/列表为结构化 JSON（v0.4） |
+| `array-size` / `array-insert` / `array-delete` | — | 读/设大小、按索引插入、删除元素（v0.3） |
+| `array-move` | `from`、`to` | 通过 `MoveArrayElement` 重排（v0.4） |
+
+### 预制体（v0.5）
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `prefab-apply` / `prefab-revert` | `id` | 应用或回滚场景修改到源预制体资源 |
+| `prefab-open` / `prefab-close` | `path` / `save` | 进入 / 退出预制体编辑模式 |
+| `prefab-source` | `id` | 获取实例的源预制体资源路径 |
+
+### 物理查询（v0.5）
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `raycast` | `origin`、`direction`、`maxDistance`、`layerMask` | 单次射线检测 |
+| `raycast-all` | 同上 | 返回射线上所有命中 |
+| `overlap-sphere` | `position`、`radius`、`layerMask` | 与球体相交的所有碰撞器 |
+
+### 资源（v0.5）
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `find-assets` | `type`、`folder`、`name` | `AssetDatabase.FindAssets` 包装 |
+| `create-scriptable-object` | `type`、`path` | 创建并保存 `ScriptableObject` 实例为项目资源 |
+| `load-asset` | `path` | 按路径解析资源 |
+| `refresh` | — | `AssetDatabase.Refresh()` |
+
+### UI
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `set-text` | `id`、`text`、`inChildren` | 直接设置 `TMP_Text` / `TextMeshProUGUI` / `Text` 的文本（v0.3） |
+| `button-click` | `id` | 通过 `onClick.Invoke()` 模拟按钮点击（v0.5） |
 
 ### Editor 控制
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
-| `play` | — | 进入 Play Mode |
-| `stop` | — | 退出 Play Mode |
-| `pause` | — | 暂停 Play Mode |
+| `play` | — | 进入 Play Mode（v0.5 起会先自动保存脏场景） |
+| `stop` / `pause` | — | Play Mode 控制 |
 | `save-scene` | — | 保存当前场景 |
-| `open-scene` | `path` | 按资源路径打开场景 |
-| `refresh` | — | AssetDatabase.Refresh() |
-| `clear-console` | — | 清空控制台缓冲区 |
+| `save-scene-as` | `path` | 另存活动场景到新路径（v0.5） |
+| `set-active-scene` | `path` / `name` | 在多场景设置中切换活动场景（v0.5） |
+| `open-scene` | `path` | 按资源路径打开场景（v0.5 起会先自动保存脏场景） |
 | `menu` | `item` | 执行菜单项 |
+| `focus-unity` / `dismiss-dialog` | — | Windows 专属主线程版本——监听线程版本见 Recovery 章节（v0.5） |
 
-### 测试
+### Prefs（v0.5）
 
 | 命令 | 参数 | 说明 |
 |------|------|------|
-| `run-tests` | `mode`, `filter`, `assemblyNames` | 启动 EditMode/PlayMode 测试 |
-| `get-test-result` | `runId`（可选） | 查询测试结果 |
+| `editor-prefs` | `action: get/set/delete`、`key`、`value` | 读/写/删除 `EditorPrefs` |
+| `player-prefs` | 同上 | 读/写/删除 `PlayerPrefs` |
 
 ### 批量执行
 
-一次调用执行多个命令：
+一次 HTTP 往返执行多个命令——把 30+ 次调用降到 1 次：
 
 ```bash
 curl -s -X POST http://localhost:$PORT/ -d '{
   "command": "batch",
   "args": {
+    "stopOnError": true,
     "commands": [
       {"command": "create", "args": {"name": "Sun", "primitiveType": "Sphere"}},
       {"command": "set-transform", "args": {"id": "$0", "scale": [3,3,3]}}
@@ -241,6 +455,28 @@ curl -s -X POST http://localhost:$PORT/ -d '{
 ```
 
 `$N` 引用批量中第 N 个命令返回的 `instanceId`。
+
+## 主线程恢复
+
+（v0.5.0）当 `POST /` 命令超时——最常见的原因是 Unity 弹出 modal 对话框，或者后台节流的 domain reload——监听线程的 `GET` 端点可以在不依赖被卡住的主线程的情况下把 Unity 拉回工作状态：
+
+| 端点 | 效果 | 平台 |
+|---|---|---|
+| `GET /ping` | 监听线程 pong（证明服务器还活着） | 全平台 |
+| `GET /health` | 返回队列深度 + 距离上次主线程 tick 的时间 + `mainThreadBlocked` 启发式判断 | 全平台 |
+| `GET /focus-unity` | 对 Unity 主窗口调用 `SetForegroundWindow`——解除后台节流的卡住操作 | 仅 Windows |
+| `GET /dismiss-dialog` | 向 Unity 拥有的前台对话框发送 `WM_CLOSE` | 仅 Windows |
+
+恢复流程：
+
+```bash
+curl -s http://localhost:$PORT/ping            # 监听线程还活着吗？
+curl -s http://localhost:$PORT/health          # mainThreadBlocked: true/false?
+curl -s http://localhost:$PORT/focus-unity     # 后台节流？把 Unity 拉到前台
+curl -s http://localhost:$PORT/dismiss-dialog  # modal 对话框？关掉它
+```
+
+**这是 tykit 与其他 Unity 桥接最关键的差异**。其他桥接都把命令排进已经卡住的主线程队列，然后一直 hang 直到 timeout。tykit 的监听线程始终活着。
 
 ## CLI 工具
 
@@ -313,37 +549,39 @@ curl -s -X POST http://localhost:$PORT/ \
 
 ## API リファレンス
 
-### 読取コマンド
+完全なリファレンスは英語/中文セクション参照。tykit v0.5.0 は **60+ コマンド**を提供：
 
-| コマンド | 引数 | 説明 |
-|----------|------|------|
-| `status` | — | Editor 状態（isPlaying, isCompiling, activeScene） |
-| `compile-status` | — | コンパイル状態 |
-| `get-compile-result` | — | コンパイル結果（state, errors, duration） |
-| `console` | `count`, `filter` | コンソールログ（直近 N 件、フィルタ可） |
-| `find` | `name`, `type`, `tag` | シーン内 GameObject 検索 |
-| `inspect` | `id` または `name` | GameObject コンポーネント検査 |
-| `hierarchy` | `depth` | シーン階層ツリー（デフォルト深度 3） |
-| `commands` | — | 利用可能コマンド一覧 |
+| カテゴリ | 主なコマンド |
+|---|---|
+| **診断** | `status`、`commands`、`compile-status`、`get-compile-result` |
+| **コンパイル & テスト** | `compile`、`run-tests`、`get-test-result` |
+| **コンソール** | `console`、`clear-console` |
+| **シーン & 階層** | `find`、`select`、`ping`、`inspect`、`hierarchy` |
+| **GameObject ライフサイクル** | `create`、`instantiate`、`destroy`、`set-transform`、`set-name` |
+| **コンポーネント** | `add-component`、`component-copy`、`component-paste`（v0.5） |
+| **プロパティ（シリアライズ）** | `get-properties`、`set-property` |
+| **リフレクション**（v0.4） | `call-method`、`get-field`、`set-field` — シリアライズプロパティをバイパスしてランタイムテストを可能に |
+| **配列** | `get-array`、`array-size`、`array-insert`、`array-delete`、`array-move` |
+| **プレハブ**（v0.5） | `prefab-apply`、`prefab-revert`、`prefab-open`、`prefab-close`、`prefab-source` |
+| **物理クエリ**（v0.5） | `raycast`、`raycast-all`、`overlap-sphere` |
+| **アセット**（v0.5） | `find-assets`、`create-scriptable-object`、`load-asset`、`refresh` |
+| **UI** | `set-text`（v0.3）、`button-click`（v0.5） |
+| **Editor 制御** | `play`、`stop`、`pause`、`save-scene`、`save-scene-as`、`set-active-scene`、`open-scene`、`menu` |
+| **Prefs**（v0.5） | `editor-prefs`、`player-prefs` |
+| **バッチ** | `batch` — 複数コマンドを 1 回の HTTP ラウンドトリップで実行 |
 
-### 書込コマンド
+## 主スレッド復旧（v0.5）
 
-| コマンド | 引数 | 説明 |
-|----------|------|------|
-| `create` | `name`, `primitiveType`, `position` | GameObject 作成 |
-| `destroy` | `id` | GameObject 削除 |
-| `set-transform` | `id`, `position`, `rotation`, `scale` | Transform 変更 |
-| `set-property` | `id`, `component`, `property`, `value` | シリアライズプロパティ設定 |
+Unity の主スレッドが modal ダイアログや domain reload で**ブロックされた時**、tykit のリスナースレッド `GET` エンドポイントが復旧手段を提供します。これは他の Unity ブリッジが死ぬシナリオで、tykit だけが生き残ります：
 
-### Editor 制御
+```bash
+curl -s http://localhost:$PORT/ping            # リスナースレッドは生きているか？
+curl -s http://localhost:$PORT/health          # mainThreadBlocked: true/false?
+curl -s http://localhost:$PORT/focus-unity     # 背景スロットリング？Unity を前面に
+curl -s http://localhost:$PORT/dismiss-dialog  # modal? 閉じる
+```
 
-| コマンド | 説明 |
-|----------|------|
-| `play` / `stop` / `pause` | Play Mode 制御 |
-| `save-scene` | シーン保存 |
-| `refresh` | AssetDatabase.Refresh() |
-| `run-tests` | EditMode/PlayMode テスト実行 |
-| `get-test-result` | テスト結果取得 |
+`/focus-unity` と `/dismiss-dialog` は Windows のみ。`/ping` と `/health` は全プラットフォーム対応。
 
 ## quick-question との連携
 
@@ -395,37 +633,39 @@ curl -s -X POST http://localhost:$PORT/ \
 
 ## API 레퍼런스
 
-### 읽기 명령
+전체 레퍼런스는 영어/中文 섹션 참조. tykit v0.5.0은 **60+ 명령**을 제공:
 
-| 명령 | 인수 | 설명 |
-|------|------|------|
-| `status` | — | Editor 상태 (isPlaying, isCompiling, activeScene) |
-| `compile-status` | — | 컴파일 상태 |
-| `get-compile-result` | — | 컴파일 결과 (state, errors, duration) |
-| `console` | `count`, `filter` | 콘솔 로그 (최근 N개, 필터 가능) |
-| `find` | `name`, `type`, `tag` | 씬 내 GameObject 검색 |
-| `inspect` | `id` 또는 `name` | GameObject 컴포넌트 검사 |
-| `hierarchy` | `depth` | 씬 계층 트리 (기본 깊이 3) |
-| `commands` | — | 사용 가능 명령 목록 |
+| 카테고리 | 주요 명령 |
+|---|---|
+| **진단** | `status`, `commands`, `compile-status`, `get-compile-result` |
+| **컴파일 & 테스트** | `compile`, `run-tests`, `get-test-result` |
+| **콘솔** | `console`, `clear-console` |
+| **씬 & 계층** | `find`, `select`, `ping`, `inspect`, `hierarchy` |
+| **GameObject 라이프사이클** | `create`, `instantiate`, `destroy`, `set-transform`, `set-name` |
+| **컴포넌트** | `add-component`, `component-copy`, `component-paste` (v0.5) |
+| **프로퍼티 (직렬화)** | `get-properties`, `set-property` |
+| **리플렉션** (v0.4) | `call-method`, `get-field`, `set-field` — 직렬화 프로퍼티를 우회해 런타임 테스트를 가능하게 |
+| **배열** | `get-array`, `array-size`, `array-insert`, `array-delete`, `array-move` |
+| **프리팹** (v0.5) | `prefab-apply`, `prefab-revert`, `prefab-open`, `prefab-close`, `prefab-source` |
+| **물리 쿼리** (v0.5) | `raycast`, `raycast-all`, `overlap-sphere` |
+| **에셋** (v0.5) | `find-assets`, `create-scriptable-object`, `load-asset`, `refresh` |
+| **UI** | `set-text` (v0.3), `button-click` (v0.5) |
+| **Editor 제어** | `play`, `stop`, `pause`, `save-scene`, `save-scene-as`, `set-active-scene`, `open-scene`, `menu` |
+| **Prefs** (v0.5) | `editor-prefs`, `player-prefs` |
+| **배치** | `batch` — 여러 명령을 1번의 HTTP 라운드트립으로 실행 |
 
-### 쓰기 명령
+## 메인 스레드 복구 (v0.5)
 
-| 명령 | 인수 | 설명 |
-|------|------|------|
-| `create` | `name`, `primitiveType`, `position` | GameObject 생성 |
-| `destroy` | `id` | GameObject 삭제 |
-| `set-transform` | `id`, `position`, `rotation`, `scale` | Transform 변경 |
-| `set-property` | `id`, `component`, `property`, `value` | 직렬화 프로퍼티 설정 |
+Unity 메인 스레드가 모달 다이얼로그 또는 domain reload로 **블록되었을 때**, tykit의 리스너 스레드 `GET` 엔드포인트가 복구 수단을 제공합니다. 이것은 다른 Unity 브리지가 죽는 시나리오에서 tykit만 살아남는 차이점입니다:
 
-### Editor 제어
+```bash
+curl -s http://localhost:$PORT/ping            # 리스너 스레드 살아있나?
+curl -s http://localhost:$PORT/health          # mainThreadBlocked: true/false?
+curl -s http://localhost:$PORT/focus-unity     # 백그라운드 스로틀링? Unity를 앞으로
+curl -s http://localhost:$PORT/dismiss-dialog  # 모달? 닫기
+```
 
-| 명령 | 설명 |
-|------|------|
-| `play` / `stop` / `pause` | Play Mode 제어 |
-| `save-scene` | 씬 저장 |
-| `refresh` | AssetDatabase.Refresh() |
-| `run-tests` | EditMode/PlayMode 테스트 실행 |
-| `get-test-result` | 테스트 결과 조회 |
+`/focus-unity`와 `/dismiss-dialog`는 Windows 전용. `/ping`과 `/health`는 모든 플랫폼 지원.
 
 ## quick-question과 함께 사용
 
