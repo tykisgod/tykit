@@ -313,24 +313,47 @@ namespace Tykit
     /// </summary>
     public static class TypeHelper
     {
+        // Resolves a type by short name ("Button"), full name ("UnityEngine.UI.Button"), or assembly-qualified name.
+        // Prefers types deriving from Component when ambiguous, so "Button" picks UnityEngine.UI.Button
+        // over UnityEngine.UIElements.Button (which isn't a Component).
         public static Type FindType(string typeName)
         {
+            // Fast path: assembly-qualified or exact resolution
             var type = Type.GetType(typeName);
             if (type != null) return type;
 
+            bool hasNamespace = typeName.Contains(".");
+            var componentBase = typeof(Component);
+            Type componentMatch = null;
+            Type firstMatch = null;
+
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
-                try
+                Type[] types;
+                try { types = assembly.GetTypes(); }
+                catch (System.Reflection.ReflectionTypeLoadException ex) { types = ex.Types; }
+
+                foreach (var t in types)
                 {
-                    foreach (var t in assembly.GetTypes())
-                    {
-                        if (t.Name == typeName)
-                            return t;
-                    }
+                    if (t == null) continue;
+
+                    bool match = hasNamespace
+                        ? (t.FullName == typeName)
+                        : (t.Name == typeName);
+                    if (!match) continue;
+
+                    // Exact match priority
+                    if (hasNamespace) return t;
+
+                    // Short name: prefer Component-derived types for disambiguation
+                    if (componentMatch == null && componentBase.IsAssignableFrom(t))
+                        componentMatch = t;
+                    if (firstMatch == null)
+                        firstMatch = t;
                 }
-                catch (System.Reflection.ReflectionTypeLoadException) { }
             }
-            return null;
+
+            return componentMatch ?? firstMatch;
         }
     }
 }

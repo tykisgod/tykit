@@ -21,10 +21,13 @@ namespace Tykit
             CommandRegistry.Register(
                 CommandRegistry.Describe(
                     "hierarchy",
-                    "Read the active scene hierarchy as a flattened tree.",
+                    "Read the scene hierarchy as a flattened tree. Provide 'id'/'path'/'name' to start from a specific GameObject; omit to start from active scene roots.",
                     "scene.query",
                     false,
                     CommandSchema.Object(
+                        ("id", CommandSchema.Integer("Optional root GameObject instanceId.")),
+                        ("path", CommandSchema.String("Optional root hierarchy path.")),
+                        ("name", CommandSchema.String("Optional root GameObject name.")),
                         ("depth", CommandSchema.Integer("Maximum traversal depth. Default is 3.")))),
                 GetHierarchy);
             CommandRegistry.Register(
@@ -51,14 +54,23 @@ namespace Tykit
                 InspectGameObject);
         }
 
-        // args: {"depth":3}
+        // args: {"depth":3} for scene roots, or {"id":12345,"depth":3} for a subtree.
         private static JObject GetHierarchy(JObject args)
         {
             int maxDepth = args["depth"]?.Value<int>() ?? 3;
-            var scene = SceneManager.GetActiveScene();
-            var roots = scene.GetRootGameObjects();
             var arr = new JArray();
 
+            // If id/name/path provided, start from that GameObject's subtree.
+            if (args["id"] != null || args["name"] != null || args["path"] != null)
+            {
+                var (root, err) = CommandRegistry.ResolveGameObject(args);
+                if (root == null) return CommandRegistry.Error(err);
+                BuildHierarchy(root.transform, 0, maxDepth, arr);
+                return CommandRegistry.Ok(arr);
+            }
+
+            var scene = SceneManager.GetActiveScene();
+            var roots = scene.GetRootGameObjects();
             foreach (var root in roots)
                 BuildHierarchy(root.transform, 0, maxDepth, arr);
 
@@ -143,6 +155,18 @@ namespace Tykit
                 components.Add(comp.GetType().Name);
             }
 
+            var children = new JArray();
+            for (int i = 0; i < go.transform.childCount; i++)
+            {
+                var child = go.transform.GetChild(i).gameObject;
+                children.Add(new JObject
+                {
+                    ["name"] = child.name,
+                    ["instanceId"] = child.GetInstanceID(),
+                    ["active"] = child.activeSelf
+                });
+            }
+
             var data = new JObject
             {
                 ["name"] = go.name,
@@ -154,6 +178,7 @@ namespace Tykit
                 ["rotation"] = Vec3ToJson(go.transform.eulerAngles),
                 ["scale"] = Vec3ToJson(go.transform.localScale),
                 ["childCount"] = go.transform.childCount,
+                ["children"] = children,
                 ["components"] = components
             };
 

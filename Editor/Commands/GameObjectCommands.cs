@@ -128,6 +128,18 @@ namespace Tykit
                 SetTag);
             CommandRegistry.Register(
                 CommandRegistry.Describe(
+                    "set-name",
+                    "Rename a GameObject.",
+                    "scene.mutate",
+                    true,
+                    CommandSchema.Object(
+                        ("id", CommandSchema.Integer("GameObject instanceId.")),
+                        ("path", CommandSchema.String("Hierarchy path.")),
+                        ("name", CommandSchema.String("GameObject name.")),
+                        ("newName", CommandSchema.String("New GameObject name.")))),
+                SetName);
+            CommandRegistry.Register(
+                CommandRegistry.Describe(
                     "add-force",
                     "Apply force to a Rigidbody on the target GameObject.",
                     "scene.mutate",
@@ -381,6 +393,21 @@ namespace Tykit
             Undo.RecordObject(go, "Set Tag");
             go.tag = tag;
             return CommandRegistry.Ok($"{go.name} tag={tag}");
+        }
+
+        // args: {"id":12345,"newName":"Diplomacy"}
+        private static JObject SetName(JObject args)
+        {
+            var (go, err) = CommandRegistry.ResolveGameObject(args);
+            if (go == null) return CommandRegistry.Error(err);
+
+            var newName = args["newName"]?.Value<string>();
+            if (string.IsNullOrEmpty(newName)) return CommandRegistry.Error("Missing 'newName'");
+
+            Undo.RecordObject(go, "Set Name");
+            var oldName = go.name;
+            go.name = newName;
+            return CommandRegistry.Ok($"Renamed: {oldName} → {newName}");
         }
 
         private static void ApplyPosition(GameObject go, JObject args)
